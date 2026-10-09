@@ -34,7 +34,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 
 from warehouse_mcp.catalog import DIALECT, Catalog
-from warehouse_mcp.policy import PolicyViolation, Principal
+from warehouse_mcp.policy import PolicyViolation, Principal, visible_model
 
 MAX_SQL_CHARS = 20_000
 
@@ -80,29 +80,8 @@ _FORBIDDEN_NODES: tuple[type[exp.Expr], ...] = tuple(
 # this list is the first of two layers.
 _FORBIDDEN_FUNCTIONS = frozenset(
     {
-        "read_csv",
-        "read_csv_auto",
-        "read_parquet",
-        "read_json",
-        "read_json_auto",
-        "read_json_objects",
-        "read_ndjson",
-        "read_ndjson_auto",
-        "read_text",
-        "read_blob",
-        "read_xlsx",
         "glob",
         "sniff_csv",
-        "parquet_scan",
-        "parquet_metadata",
-        "parquet_schema",
-        "parquet_file_metadata",
-        "parquet_kv_metadata",
-        "iceberg_scan",
-        "delta_scan",
-        "sqlite_scan",
-        "postgres_scan",
-        "mysql_scan",
         "getenv",
         "current_setting",
         "query",
@@ -114,11 +93,9 @@ _FORBIDDEN_FUNCTIONS = frozenset(
         "columns",
         "unpivot",
         "pivot",
-        "pragma_table_info",
-        "pragma_storage_info",
-        "pragma_show",
     }
 )
+# Whole families: read_csv, read_parquet, parquet_scan, iceberg_scan, pragma_table_info, ...
 _FORBIDDEN_PREFIXES = (
     "read_",
     "duckdb_",
@@ -220,15 +197,7 @@ class SqlGuard:
             name = table.name.lower()
             if name in cte_names and not table.db:
                 continue
-            model = self.catalog.by_name.get(name)
-            if model is None or not principal.can_see(model):
-                raise PolicyViolation(
-                    "UNKNOWN_MODEL",
-                    f"{name!r} is not a model you can query; use search_models to find one",
-                    internal_detail=None
-                    if model is None
-                    else f"{name} is {model.tier}; principal max tier is {principal.max_tier}",
-                )
+            visible_model(self.catalog, name, principal)
             models.add(name)
             aliases.add(name)
             if table.alias:

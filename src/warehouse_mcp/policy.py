@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from warehouse_mcp.catalog import Model, Tier
+from warehouse_mcp.catalog import Catalog, Model, Tier
 
 SCOPE_PUBLIC = "warehouse:public"
 SCOPE_INTERNAL = "warehouse:internal"
@@ -68,7 +68,7 @@ class Principal:
         return SCOPE_PII in self.scopes
 
     def can_see(self, model: Model) -> bool:
-        return self.max_tier is not None and model.tier <= self.max_tier
+        return self.can_see_tier(model.tier)
 
     def can_see_tier(self, tier: Tier) -> bool:
         return self.max_tier is not None and tier <= self.max_tier
@@ -86,3 +86,18 @@ class PolicyViolation(Exception):
         self.code = code
         self.message = message
         self.internal_detail = internal_detail or message
+
+
+def visible_model(catalog: Catalog, name: str, principal: Principal) -> Model:
+    """The model, if the principal may see it. Unknown and invisible models get the same error,
+    so a refusal never confirms that a restricted model exists."""
+    model = catalog.by_name.get(name)
+    if model is None or not principal.can_see(model):
+        raise PolicyViolation(
+            "UNKNOWN_MODEL",
+            f"{name!r} is not a model you can query; use search_models to find one",
+            internal_detail=None
+            if model is None
+            else f"{name} is {model.tier}; principal max tier is {principal.max_tier}",
+        )
+    return model

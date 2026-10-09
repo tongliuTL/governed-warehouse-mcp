@@ -117,7 +117,10 @@ class JwtVerifier:
             raise AuthError(f"invalid token: {err}") from None
 
     def principal(self, token: str) -> Principal:
-        claims = self.claims(token)
+        return self._principal(self.claims(token))
+
+    @staticmethod
+    def _principal(claims: dict[str, object]) -> Principal:
         scope = claims.get("scope", "")
         if not isinstance(scope, str):
             raise AuthError("invalid token: scope must be a space-separated string")
@@ -131,9 +134,9 @@ class JwtVerifier:
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
             claims = self.claims(token)
+            principal = self._principal(claims)
         except AuthError:
             return None
-        principal = self.principal(token)
         exp = claims.get("exp")
         return AccessToken(
             token=token,

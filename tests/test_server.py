@@ -9,7 +9,7 @@ from mcp import Client
 from tests.util import run
 from warehouse_mcp.catalog import Catalog
 from warehouse_mcp.policy import Principal
-from warehouse_mcp.server import GovernedWarehouse, ServerConfig
+from warehouse_mcp.server import GovernedWarehouse, ServerConfig, error_code
 from warehouse_mcp.warehouse import Warehouse
 
 EXPECTED_TOOLS = {"search_models", "describe_model", "list_metrics", "query_metric", "run_sql"}
@@ -23,9 +23,9 @@ def call(gw: GovernedWarehouse, principal: Principal | None, tool: str, args: di
     return run(go)
 
 
-def error_code(result: Any) -> str:
+def denial_code(result: Any) -> str | None:
     assert result.is_error, result
-    return str(result.content[0].text.split(": ")[1])
+    return error_code(result.content[0].text)
 
 
 def test_tool_surface(governed: GovernedWarehouse, analyst: Principal) -> None:
@@ -74,7 +74,9 @@ def test_describe_model(
     assert all(c["selectable"] for c in info["columns"])
     shipments = call(governed, analyst, "describe_model", {"name": "fct_shipments"}).structured_content
     assert "on_time_rate" in shipments["metrics"] and "dim_lanes" in shipments["joins_to"]
-    assert error_code(call(governed, partner, "describe_model", {"name": "fct_shipments"})) == "UNKNOWN_MODEL"
+    assert (
+        denial_code(call(governed, partner, "describe_model", {"name": "fct_shipments"})) == "UNKNOWN_MODEL"
+    )
 
 
 def test_list_metrics_by_role(
@@ -113,14 +115,14 @@ def test_denials_are_coded_and_audited(governed: GovernedWarehouse, analyst: Pri
         ("query_metric", {"metric": "on_time_rate", "start_date": "not-a-date"}, "BAD_REQUEST"),
     ]
     for tool, args, code in cases:
-        assert error_code(call(governed, analyst, tool, args)) == code
+        assert denial_code(call(governed, analyst, tool, args)) == code
     denials = [r for r in governed.audit.records() if r.decision == "deny"]
     assert [r.reason_code for r in denials] == [code for _, _, code in cases]
     assert "restricted" in (denials[2].detail or "")  # the audit log knows why; the agent does not
 
 
 def test_unauthenticated(governed: GovernedWarehouse) -> None:
-    assert error_code(call(governed, None, "list_metrics", {})) == "UNAUTHENTICATED"
+    assert denial_code(call(governed, None, "list_metrics", {})) == "UNAUTHENTICATED"
     assert governed.audit.records()[-1].principal == "anonymous"
 
 
@@ -135,7 +137,7 @@ def test_rate_limit(warehouse: Warehouse, catalog: Catalog, analyst: Principal) 
 
     results = run(go)
     assert [r.is_error for r in results] == [False, False, True]
-    assert error_code(results[2]) == "RATE_LIMITED"
+    assert denial_code(results[2]) == "RATE_LIMITED"
 
 
 def test_large_results_are_truncated_to_budget(
@@ -170,6 +172,6 @@ def test_internal_errors_are_masked_and_audited(
     monkeypatch.setattr(governed, "metrics", boom)
     result = call(governed, analyst, "list_metrics", {})
     assert result.is_error and "secret" not in result.content[0].text
-    assert error_code(result) == "INTERNAL_ERROR"
+    assert denial_code(result) == "INTERNAL_ERROR"
     record = governed.audit.records()[-1]
     assert record.decision == "error" and "secret internals" in (record.detail or "")

@@ -176,26 +176,32 @@ def test_rejections(
 
 
 def test_no_time_column(catalog: Catalog, partner: Principal) -> None:
-    compiler = SemanticCompiler(catalog)
-    # mart_border_crossing_dwell has a time column, so use a fake metric on a model without one.
-    metric = catalog.metric("avg_border_dwell_hours").model_copy(update={"model": "mart_carrier_scorecard"})
-    patched = catalog.model_copy(update={"metrics": (metric,)})
-    patched.__dict__.pop("metrics_by_name", None)
-    with pytest.raises(PolicyViolation, match="NO_TIME_DIMENSION"):
-        SemanticCompiler(patched).compile(
-            MetricRequest(metric="avg_border_dwell_hours", time_grain="month"), partner
-        )
-    assert compiler.catalog is catalog
+    # Every packaged metric's model has a time column, so add one on a model without one.
+    metric = {
+        "name": "carrier_on_time",
+        "model": "mart_carrier_scorecard",
+        "description": "Average carrier on-time rate.",
+        "expression": "AVG(mart_carrier_scorecard.on_time_rate)",
+        "format": "ratio",
+    }
+    patched = catalog.replace(metrics=[*catalog.model_dump(by_alias=True)["metrics"], metric])
+    compiler = SemanticCompiler(patched)
+    for request in (
+        MetricRequest(metric="carrier_on_time", time_grain="month"),
+        MetricRequest(metric="carrier_on_time", start_date="2025-01-01"),
+    ):
+        with pytest.raises(PolicyViolation, match="NO_TIME_DIMENSION"):
+            compiler.compile(request, partner)
 
 
 def test_dimension_on_invisible_model_is_refused(catalog: Catalog, partner: Principal) -> None:
     """A metric a partner may see, grouped by a column of a model the partner may not see."""
-    models = tuple(
-        m.model_copy(update={"tier_name": "public"}) if m.name == "fct_quotes" else m for m in catalog.models
-    )
-    patched = catalog.model_copy(update={"models": models})
-    for cached in ("by_name", "metrics_by_name"):
-        patched.__dict__.pop(cached, None)
+    models = [
+        {**m, "tier": "public"} if m["name"] == "fct_quotes" else m
+        for m in catalog.model_dump(by_alias=True)["models"]
+    ]
+    patched = catalog.replace(models=models)
+    assert patched.version != catalog.version  # derived state is rebuilt, not copied
     compiler = SemanticCompiler(patched)
     _, tier, used = compiler.compile(
         MetricRequest(metric="quote_acceptance_rate", group_by=["mode"]), partner

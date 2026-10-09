@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import sys
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -174,9 +173,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    # Offline runs go through fake transports; per-request HTTP logs would only suggest real API calls.
-    for name in ("httpx", "httpx2", "mcp"):
-        logging.getLogger(name).setLevel(logging.WARNING)
     return int(anyio.run(args.func, args))
 
 

@@ -76,7 +76,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         except auth.AuthError as err:
             print(str(err), file=sys.stderr)
             return 2
-        gw.build_mcp(lambda: principal).run("stdio")
+        gw.build_mcp(lambda: principal, log_level="INFO").run("stdio")
         return 0
     base_url = f"http://{args.host}:{args.port}"
     mcp = gw.build_mcp(
@@ -88,6 +88,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             required_scopes=["warehouse:public"],
             validate_token_resource=False,
         ),
+        log_level="INFO",
     )
     mcp.run(
         "streamable-http",

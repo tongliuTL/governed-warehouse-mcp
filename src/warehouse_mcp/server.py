@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,12 +26,19 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 from warehouse_mcp.audit import AuditLog, AuditRecord
-from warehouse_mcp.catalog import Catalog, Tier, load_catalog
+from warehouse_mcp.catalog import DIALECT, Catalog, Tier, load_catalog
 from warehouse_mcp.discovery import Discovery
-from warehouse_mcp.policy import PolicyViolation, Principal
+from warehouse_mcp.policy import PolicyViolation, Principal, visible_model
 from warehouse_mcp.ratelimit import RateLimiter
-from warehouse_mcp.semantic import Filter, MetricRequest, SemanticCompiler, TimeGrain
-from warehouse_mcp.sql_guard import GuardedQuery, SqlGuard
+from warehouse_mcp.semantic import (
+    MAX_FILTERS,
+    MAX_GROUP_BY,
+    Filter,
+    MetricRequest,
+    SemanticCompiler,
+    TimeGrain,
+)
+from warehouse_mcp.sql_guard import MAX_SQL_CHARS, GuardedQuery, SqlGuard
 from warehouse_mcp.warehouse import JsonScalar, Warehouse
 
 log = logging.getLogger(__name__)
@@ -135,6 +143,16 @@ class ServerConfig:
 
 PrincipalResolver = Callable[[], Principal | None]
 
+# A denial reaches the client as "CODE: message" (see GovernedWarehouse._deny); the MCP SDK may
+# prefix it with "Error executing tool <name>: ".
+_ERROR_CODE = re.compile(r"^(?:Error executing tool \S+: )?([A-Z][A-Z_]+): ")
+
+
+def error_code(text: str) -> str | None:
+    """The stable code at the start of a tool error's text, or None if there is none."""
+    match = _ERROR_CODE.match(text)
+    return match.group(1) if match else None
+
 
 def principal_from_request() -> Principal | None:
     """Principal for HTTP transport: built from the token the auth middleware verified."""
@@ -159,6 +177,11 @@ class GovernedWarehouse:
         self.guard = SqlGuard(self.catalog, max_rows=self.config.max_rows)
         self.compiler = SemanticCompiler(self.catalog, max_rows=self.config.max_rows)
         self.discovery = Discovery(self.catalog)
+        self.limiter = RateLimiter(self.config.rate_capacity, self.config.rate_refill_per_s)
+
+    def reset(self) -> None:
+        """Start a fresh in-memory audit log and rate limit, e.g. between eval cases."""
+        self.audit = AuditLog()
         self.limiter = RateLimiter(self.config.rate_capacity, self.config.rate_refill_per_s)
 
     # -- governance envelope ---------------------------------------------------------
@@ -199,13 +222,7 @@ class GovernedWarehouse:
         )
 
     def describe(self, principal: Principal, name: str) -> ModelInfo:
-        model = self.catalog.by_name.get(name)
-        if model is None or not principal.can_see(model):
-            raise PolicyViolation(
-                "UNKNOWN_MODEL",
-                f"{name!r} is not a model you can query; use search_models",
-                internal_detail=None if model is None else f"{name} is {model.tier}",
-            )
+        model = visible_model(self.catalog, name, principal)
         return ModelInfo(
             name=model.name,
             kind=model.kind,
@@ -286,7 +303,7 @@ class GovernedWarehouse:
     def query_metric(self, principal: Principal, request: MetricRequest, record: AuditRecord) -> QueryResult:
         select, _tier, _models = self.compiler.compile(request, principal)
         # Compiled SQL goes through the same guard as agent SQL: defence in depth.
-        guarded = self.guard.check(select.sql(dialect="duckdb"), principal)
+        guarded = self.guard.check(select.sql(dialect=DIALECT), principal)
         return self._execute(guarded, record)
 
     def run_sql(self, principal: Principal, sql: str, record: AuditRecord) -> QueryResult:
@@ -315,7 +332,11 @@ class GovernedWarehouse:
         return result
 
     def build_mcp(self, resolver: PrincipalResolver, **server_kwargs: Any) -> MCPServer:
+        # MCPServer configures root logging at its log level; a library default of INFO would
+        # take over the host's logging, so the caller opts in (gwm serve passes INFO).
+        server_kwargs.setdefault("log_level", "WARNING")
         mcp = MCPServer("governed-warehouse", instructions=INSTRUCTIONS, version="0.1.0", **server_kwargs)
+        default_limit = min(50, self.config.max_rows)
 
         @mcp.tool()
         async def search_models(
@@ -359,10 +380,12 @@ class GovernedWarehouse:
                 list[str],
                 Field(
                     description="Dimensions to group by, as 'model.column' or a bare column name.",
-                    max_length=4,
+                    max_length=MAX_GROUP_BY,
                 ),
             ] = [],  # noqa: B006 - schema default; the list is never mutated
-            filters: Annotated[list[Filter], Field(description="Filters on dimensions.", max_length=8)] = [],  # noqa: B006
+            filters: Annotated[
+                list[Filter], Field(description="Filters on dimensions.", max_length=MAX_FILTERS)
+            ] = [],  # noqa: B006
             time_grain: Annotated[
                 TimeGrain | None, Field(description="Bucket the metric by the base model's time column.")
             ] = None,
@@ -372,7 +395,11 @@ class GovernedWarehouse:
                 str | None, Field(description="Output column to sort by; defaults to the metric.")
             ] = None,
             descending: bool = True,
-            limit: Annotated[int, Field(description="Maximum rows.", ge=1, le=200)] = 50,
+            # The upper bound is the server's configured row cap, checked by the compiler; schema
+            # annotations resolve against module globals, so they cannot carry per-server config.
+            limit: Annotated[
+                int, Field(description="Maximum rows, up to the server's row cap.", ge=1)
+            ] = default_limit,
         ) -> QueryResult:
             """Compute a governed metric, optionally grouped, filtered and bucketed by time.
 
@@ -406,7 +433,7 @@ class GovernedWarehouse:
                 Field(
                     description="One read-only DuckDB SELECT over catalog models.",
                     min_length=1,
-                    max_length=20_000,
+                    max_length=MAX_SQL_CHARS,
                 ),
             ],
         ) -> QueryResult:

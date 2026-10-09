@@ -137,7 +137,7 @@ class Entry:
     kind: Literal["model", "metric"]
     name: str
     description: str
-    tier_rank: int
+    tier: Tier
     identifier_text: str
     description_text: str
 
@@ -174,7 +174,7 @@ class Discovery:
                     kind="model",
                     name=model.name,
                     description=model.description,
-                    tier_rank=int(model.tier),
+                    tier=model.tier,
                     identifier_text=" ".join([model.name, *model.aliases, *(c.name for c in model.columns)]),
                     description_text=" ".join(
                         [model.description, model.grain, *(c.description for c in model.columns)]
@@ -187,7 +187,7 @@ class Discovery:
                     kind="metric",
                     name=metric.name,
                     description=metric.description,
-                    tier_rank=int(catalog.metric_tier(metric)),
+                    tier=catalog.metric_tier(metric),
                     identifier_text=" ".join([metric.name, *metric.synonyms]),
                     description_text=metric.description,
                 )
@@ -197,7 +197,7 @@ class Discovery:
     def _visible(self, principal: Principal | None) -> list[bool]:
         if principal is None:
             return [True] * len(self._index.entries)
-        return [principal.can_see_tier(Tier(e.tier_rank)) for e in self._index.entries]
+        return [principal.can_see_tier(e.tier) for e in self._index.entries]
 
     def rank(self, query: str, ranker: Ranker = "rrf") -> list[tuple[int, float]]:
         """Indices into the entry list with scores, best first, before access filtering."""

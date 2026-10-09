@@ -9,10 +9,10 @@ from typing import Any
 import anthropic
 import httpx2
 import pytest
-from mcp import Client
 
-from tests.util import run
-from warehouse_evals.agent import FALLBACK_BETA, SYSTEM_PROMPT, Trajectory, WarehouseAgent
+from tests.util import run_agent as run_with_client
+from warehouse_evals.agent import FALLBACK_BETA, SYSTEM_PROMPT, Trajectory
+from warehouse_evals.runner import offline_client
 from warehouse_evals.sse import TextBlock, ToolUseBlock, Turn, encode_turn
 from warehouse_evals.transport import ScriptedTransport
 from warehouse_mcp.policy import Principal
@@ -27,22 +27,14 @@ def scripted(steps: Sequence[Step]) -> tuple[anthropic.AsyncAnthropic, ScriptedT
         return step(body) if callable(step) else step
 
     transport = ScriptedTransport(policy)
-    client = anthropic.AsyncAnthropic(
-        api_key="test", max_retries=0, http_client=httpx2.AsyncClient(transport=transport)
-    )
-    return client, transport
+    return offline_client(transport), transport
 
 
 def run_agent(
     gw: GovernedWarehouse, principal: Principal, steps: Sequence[Step], **kwargs: Any
 ) -> tuple[Trajectory, ScriptedTransport]:
     client, transport = scripted(steps)
-
-    async def go() -> Trajectory:
-        async with Client(gw.build_mcp(lambda: principal)) as mcp:
-            return await WarehouseAgent(client, mcp, **kwargs).run("question?")
-
-    return run(go), transport
+    return run_with_client(gw, principal, client, **kwargs), transport
 
 
 def last_tool_results(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -68,15 +60,7 @@ def test_beta_header_is_sent(governed: GovernedWarehouse, analyst: Principal) ->
             return await super().handle_async_request(request)
 
     spy = Spy(lambda body: Turn((TextBlock("ok"),)))
-    client = anthropic.AsyncAnthropic(
-        api_key="t", max_retries=0, http_client=httpx2.AsyncClient(transport=spy)
-    )
-
-    async def go() -> None:
-        async with Client(governed.build_mcp(lambda: analyst)) as mcp:
-            await WarehouseAgent(client, mcp).run("q")
-
-    run(go)
+    run_with_client(governed, analyst, offline_client(spy))
     assert FALLBACK_BETA in seen[0]
 
 
@@ -211,15 +195,7 @@ def test_api_errors_are_recorded(governed: GovernedWarehouse, analyst: Principal
                 529, json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}}
             )
 
-    client = anthropic.AsyncAnthropic(
-        api_key="t", max_retries=0, http_client=httpx2.AsyncClient(transport=Failing())
-    )
-
-    async def go() -> Trajectory:
-        async with Client(governed.build_mcp(lambda: analyst)) as mcp:
-            return await WarehouseAgent(client, mcp).run("q")
-
-    traj = run(go)
+    traj = run_with_client(governed, analyst, offline_client(Failing()))
     assert traj.stop == "api_error" and "busy" in (traj.error or "")
 
 

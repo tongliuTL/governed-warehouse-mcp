@@ -21,9 +21,13 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import anthropic
-import jsonschema
 from anthropic.types.beta import BetaMessageParam, BetaToolResultBlockParam
+from jsonschema.exceptions import best_match
+from jsonschema.protocols import Validator
+from jsonschema.validators import validator_for
 from mcp import Client
+
+from warehouse_mcp.server import error_code
 
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -57,9 +61,7 @@ class ToolCall:
     def error_code(self) -> str | None:
         if not self.is_error:
             return None
-        text = self.output.removeprefix("Error executing tool ").split(": ", 1)
-        candidate = text[1].split(":", 1)[0] if len(text) > 1 else text[0].split(":", 1)[0]
-        return candidate if candidate.isupper() else "TOOL_ERROR"
+        return error_code(self.output) or "TOOL_ERROR"
 
 
 @dataclass
@@ -104,6 +106,7 @@ class WarehouseAgent:
         max_turns: int = 12,
         max_tokens: int = 64_000,
         on_text: Callable[[str], None] | None = None,
+        system: str = SYSTEM_PROMPT,
     ) -> None:
         self.client = client
         self.mcp = mcp
@@ -112,14 +115,20 @@ class WarehouseAgent:
         self.max_turns = max_turns
         self.max_tokens = max_tokens
         self.on_text = on_text
+        self.system = system
 
     async def run(self, question: str) -> Trajectory:  # noqa: PLR0912, PLR0915 - one readable loop
         tools = (await self.mcp.list_tools()).tools
-        schemas = {t.name: t.input_schema for t in tools}
+        # Schemas are fixed for the run: check and compile each once, not on every tool call.
+        validators: dict[str, Validator] = {}
+        for t in tools:
+            cls = validator_for(t.input_schema)
+            cls.check_schema(t.input_schema)
+            validators[t.name] = cls(t.input_schema)
         params: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "system": SYSTEM_PROMPT,
+            "system": self.system,
             "tools": [_anthropic_tool(t) for t in tools],
             "thinking": {"type": "adaptive"},
             "output_config": {"effort": self.effort},
@@ -167,9 +176,13 @@ class WarehouseAgent:
                 tool_uses = [(i, b) for i, b in enumerate(message.content) if b.type == "tool_use"]
                 if message.stop_reason == "refusal" or not tool_uses:
                     traj.final_text = "".join(b.text for b in message.content if b.type == "text").strip()
-                    traj.stop = "refusal" if message.stop_reason == "refusal" else "end_turn"
-                    if message.stop_reason == "max_tokens":
-                        traj.stop = "max_tokens"
+                    traj.stop = (
+                        "refusal"
+                        if message.stop_reason == "refusal"
+                        else "max_tokens"
+                        if message.stop_reason == "max_tokens"
+                        else "end_turn"
+                    )
                     break
                 if message.stop_reason == "max_tokens":
                     traj.stop = "max_tokens"  # a truncated tool input parses as a valid partial object
@@ -183,16 +196,15 @@ class WarehouseAgent:
                     except json.JSONDecodeError:
                         strict = None
                     args = strict if isinstance(strict, dict) else None
-                    schema = schemas.get(block.name)
+                    validator = validators.get(block.name)
                     problem = None
-                    if schema is None:
+                    if validator is None:
                         problem = f"UNKNOWN_TOOL: {block.name}"
                     elif args is None:
                         problem = json.dumps({"INVALID_JSON": raw})
                     else:
-                        try:
-                            jsonschema.validate(args, schema)
-                        except jsonschema.ValidationError as err:
+                        err = best_match(validator.iter_errors(args))
+                        if err is not None:
                             problem = json.dumps(
                                 {"INVALID_JSON": json.dumps(args, default=str), "reason": err.message}
                             )

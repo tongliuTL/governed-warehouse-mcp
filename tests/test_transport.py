@@ -6,14 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-import anthropic
 import httpx2
 import pytest
-from mcp import Client
 
-from tests.util import run
-from warehouse_evals import agent as agent_module
-from warehouse_evals.agent import Trajectory, WarehouseAgent
+from tests.util import run_agent
+from warehouse_evals.agent import Trajectory
+from warehouse_evals.runner import offline_client
 from warehouse_evals.sse import TextBlock, ToolUseBlock, Turn
 from warehouse_evals.transport import CassetteMismatch, RecordingTransport, ReplayTransport, ScriptedTransport
 from warehouse_mcp.policy import Principal
@@ -28,19 +26,10 @@ def policy(body: dict[str, Any]) -> Turn:
 
 
 def agent_run(
-    gw: GovernedWarehouse, principal: Principal, transport: httpx2.AsyncBaseTransport
+    gw: GovernedWarehouse, principal: Principal, transport: httpx2.AsyncBaseTransport, **kwargs: Any
 ) -> Trajectory:
-    client = anthropic.AsyncAnthropic(
-        api_key="sk-ant-secret-should-not-be-saved",
-        max_retries=0,
-        http_client=httpx2.AsyncClient(transport=transport),
-    )
-
-    async def go() -> Trajectory:
-        async with Client(gw.build_mcp(lambda: principal)) as mcp:
-            return await WarehouseAgent(client, mcp).run("How many shipments?")
-
-    return run(go)
+    client = offline_client(transport, api_key="sk-ant-secret-should-not-be-saved")
+    return run_agent(gw, principal, client, "How many shipments?", **kwargs)
 
 
 def test_record_then_replay(governed: GovernedWarehouse, analyst: Principal, tmp_path: Path) -> None:
@@ -57,16 +46,13 @@ def test_record_then_replay(governed: GovernedWarehouse, analyst: Principal, tmp
     assert [c.name for c in replayed.tool_calls] == [c.name for c in live.tool_calls]
 
 
-def test_replay_detects_prompt_drift(
-    governed: GovernedWarehouse, analyst: Principal, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_replay_detects_prompt_drift(governed: GovernedWarehouse, analyst: Principal, tmp_path: Path) -> None:
     cassette = tmp_path / "case.t0.jsonl"
     recorder = RecordingTransport(ScriptedTransport(policy), cassette)
     agent_run(governed, analyst, recorder)
     recorder.save({})
-    monkeypatch.setattr(agent_module, "SYSTEM_PROMPT", "A different prompt.")
     replay = ReplayTransport(cassette)
-    traj = agent_run(governed, analyst, replay)
+    traj = agent_run(governed, analyst, replay, system="A different prompt.")
     assert traj.stop == "api_error"  # the SDK surfaces transport errors as connection errors...
     assert replay.failure and "system" in replay.failure  # ...and the transport keeps the real reason
 

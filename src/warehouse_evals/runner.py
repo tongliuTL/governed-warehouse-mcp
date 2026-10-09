@@ -15,13 +15,14 @@ from typing import Any, Literal
 import anthropic
 import httpx2
 from mcp import Client
+from mcp.server import MCPServer
+from sqlglot import exp
 
 from warehouse_evals.agent import DEFAULT_MODEL, Trajectory, WarehouseAgent
 from warehouse_evals.cases import AgentCase
 from warehouse_evals.graders import Grade, grade_all
 from warehouse_evals.scripted import POLICIES
 from warehouse_evals.transport import Policy, RecordingTransport, ReplayTransport, ScriptedTransport
-from warehouse_mcp.audit import AuditLog
 from warehouse_mcp.catalog import Catalog, load_catalog
 from warehouse_mcp.policy import Principal
 from warehouse_mcp.server import GovernedWarehouse, ServerConfig
@@ -58,6 +59,12 @@ class CaseResult:
         return {g.name for g in self.grades if not g.passed}
 
 
+def _select_columns(model: str, columns: Sequence[str]) -> str:
+    return (
+        exp.select(*(exp.column(c, quoted=True) for c in columns)).from_(exp.table_(model, quoted=True)).sql()
+    )
+
+
 class EvalContext:
     """Shared, read-only state for a batch of runs."""
 
@@ -67,15 +74,17 @@ class EvalContext:
         self.catalog = catalog or load_catalog()
         self.config = config or ServerConfig()
         self.warehouse = Warehouse(db, timeout_s=self.config.query_timeout_s)
+        # Every PII value in the warehouse, from whatever columns the catalog marks as PII.
         self.pii_values = [
             str(v)
-            for row in self.warehouse.execute_trusted(
-                "SELECT contact_name, contact_email, contact_phone FROM dim_customers"
-            )
+            for m in self.catalog.models
+            if m.pii_columns
+            for row in self.warehouse.execute_trusted(_select_columns(m.name, sorted(m.pii_columns)))
             for v in row
             if v
         ]
         self._gold: dict[str, tuple[Any, ...] | None] = {}
+        self._servers: dict[str, tuple[GovernedWarehouse, MCPServer]] = {}
 
     def gold(self, sql: str | None) -> tuple[Any, ...] | None:
         if sql is None:
@@ -85,30 +94,37 @@ class EvalContext:
             self._gold[sql] = rows[0] if rows else None
         return self._gold[sql]
 
-    def server(self, role: str) -> tuple[GovernedWarehouse, Principal]:
-        gw = GovernedWarehouse(
-            warehouse=self.warehouse, catalog=self.catalog, audit=AuditLog(), config=self.config
-        )
-        return gw, Principal.for_role(role, subject=f"eval-{role}")
+    def server(self, role: str) -> tuple[GovernedWarehouse, MCPServer]:
+        """The server for a role, built once per role (tool schemas and the search index are
+        not cheap) and reset to a fresh audit log and rate limit for each case."""
+        if role not in self._servers:
+            gw = GovernedWarehouse(warehouse=self.warehouse, catalog=self.catalog, config=self.config)
+            principal = Principal.for_role(role, subject=f"eval-{role}")
+            self._servers[role] = (gw, gw.build_mcp(lambda: principal))
+        gw, server = self._servers[role]
+        gw.reset()
+        return gw, server
 
     def close(self) -> None:
         self.warehouse.close()
 
 
-def scripted_client(policy: Policy) -> anthropic.AsyncAnthropic:
+def offline_client(
+    transport: httpx2.AsyncBaseTransport, api_key: str = "offline"
+) -> anthropic.AsyncAnthropic:
+    """The real SDK client over a transport that never touches the network."""
     return anthropic.AsyncAnthropic(
-        api_key="offline-scripted",
-        max_retries=0,
-        http_client=httpx2.AsyncClient(transport=ScriptedTransport(policy)),
+        api_key=api_key, max_retries=0, http_client=httpx2.AsyncClient(transport=transport)
     )
+
+
+def scripted_client(policy: Policy) -> anthropic.AsyncAnthropic:
+    return offline_client(ScriptedTransport(policy))
 
 
 def replay_client(cassette: Path) -> tuple[anthropic.AsyncAnthropic, ReplayTransport]:
     transport = ReplayTransport(cassette)
-    client = anthropic.AsyncAnthropic(
-        api_key="offline-replay", max_retries=0, http_client=httpx2.AsyncClient(transport=transport)
-    )
-    return client, transport
+    return offline_client(transport), transport
 
 
 def live_client(record_to: Path | None) -> tuple[anthropic.AsyncAnthropic, RecordingTransport | None]:
@@ -132,8 +148,7 @@ async def run_case(
     effort: str = "high",
     on_text: Callable[[str], None] | None = None,
 ) -> CaseResult:
-    gw, principal = ctx.server(case.role)
-    server = gw.build_mcp(lambda: principal)
+    gw, server = ctx.server(case.role)
     async with Client(server) as mcp:
         traj: Trajectory = await WarehouseAgent(client, mcp, model=model, effort=effort, on_text=on_text).run(
             case.question
@@ -145,7 +160,7 @@ async def run_case(
         traj,
         gold=gold,
         secret=secret,
-        can_read_pii=principal.can_read_pii,
+        can_read_pii=Principal.for_role(case.role).can_read_pii,
         pii_values=ctx.pii_values,
         pii_columns=sorted(ctx.catalog.pii_column_names),
     )
@@ -265,6 +280,4 @@ async def run_live(
 
 
 def result_dict(result: CaseResult) -> dict[str, Any]:
-    data = asdict(result)
-    data["grades"] = [asdict(g) for g in result.grades]
-    return data
+    return asdict(result)

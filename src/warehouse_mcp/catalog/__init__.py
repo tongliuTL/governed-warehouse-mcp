@@ -149,17 +149,25 @@ class Catalog(_Strict):
         model = self.model(base)
         return (model, *(self.model(j.model) for j in model.joins))
 
+    def metric_models(self, metric: Metric) -> frozenset[str]:
+        """The models a metric reads: its base model plus any its expression or filter names."""
+        asts = (a for a in (metric.expression_ast, metric.where_ast) if a is not None)
+        return frozenset({metric.model} | {c.table for a in asts for c in a.find_all(exp.Column)})
+
     def metric_tier(self, metric: Metric) -> Tier:
-        """A metric is as sensitive as the most sensitive model its expression reads."""
-        tables = {c.table for c in metric.expression_ast.find_all(exp.Column)} | {metric.model}
-        return max(self.model(t).tier for t in tables)
+        """A metric is as sensitive as the most sensitive model it reads."""
+        return max(self.model(t).tier for t in self.metric_models(metric))
+
+    def replace(self, **changes: object) -> Catalog:
+        """A validated copy with some fields replaced (cached indexes are rebuilt)."""
+        return Catalog.model_validate({**self.model_dump(by_alias=True), **changes})
 
     @model_validator(mode="after")
     def _check(self) -> Catalog:  # noqa: PLR0912 - one branch per invariant
         names = [m.name for m in self.models]
         if len(names) != len(set(names)):
             raise ValueError("duplicate model names")
-        by_name = {m.name: m for m in self.models}
+        by_name = self.by_name
         for model in self.models:
             for join in model.joins:
                 target = by_name.get(join.model)
@@ -175,7 +183,7 @@ class Catalog(_Strict):
             base = by_name.get(metric.model)
             if base is None:
                 raise ValueError(f"metric {metric.name}: unknown model {metric.model!r}")
-            reachable = {base.name: base} | {j.model: by_name[j.model] for j in base.joins}
+            reachable = {m.name: m for m in self.reachable_models(base.name)}
             for ast in (metric.expression_ast, metric.where_ast):
                 if ast is None:
                     continue

@@ -60,14 +60,6 @@ def _col(table: str, name: str) -> exp.Column:
     return exp.column(name, table=table, quoted=True)
 
 
-def _literal(value: Scalar) -> exp.Expr:
-    if isinstance(value, bool):
-        return exp.Boolean(this=value)
-    if isinstance(value, int | float):
-        return exp.Literal.number(value)
-    return exp.Literal.string(value)
-
-
 class SemanticCompiler:
     def __init__(self, catalog: Catalog, max_rows: int = 200) -> None:
         self.catalog = catalog
@@ -134,9 +126,7 @@ class SemanticCompiler:
             raise PolicyViolation("LIMIT_TOO_HIGH", f"limit must be at most {self.max_rows}")
 
         base = self.catalog.model(metric.model)
-        used: dict[str, Model] = {base.name: base}
-        for col in metric.expression_ast.find_all(exp.Column):
-            used[col.table] = self.catalog.model(col.table)
+        used: dict[str, Model] = {m: self.catalog.model(m) for m in self.catalog.metric_models(metric)}
 
         select = exp.Select()
         group_exprs: list[exp.Expr] = []
@@ -166,36 +156,23 @@ class SemanticCompiler:
         conditions: list[exp.Expr] = []
         if metric.where_ast is not None:
             conditions.append(metric.where_ast.copy())
-        if (request.start_date or request.end_date) and base.time_column is None:
-            raise PolicyViolation("NO_TIME_DIMENSION", f"{metric.name} has no time column to filter on")
-        if request.start_date:
-            conditions.append(
-                exp.GTE(
-                    this=_col(base.name, base.time_column or ""),
-                    expression=exp.Cast(
-                        this=exp.Literal.string(request.start_date.isoformat()), to=exp.DataType.build("DATE")
-                    ),
-                )
-            )
-        if request.end_date:
-            conditions.append(
-                exp.LTE(
-                    this=_col(base.name, base.time_column or ""),
-                    expression=exp.Cast(
-                        this=exp.Literal.string(request.end_date.isoformat()), to=exp.DataType.build("DATE")
-                    ),
-                )
-            )
+        for op, day in ((exp.GTE, request.start_date), (exp.LTE, request.end_date)):
+            if day is None:
+                continue
+            if base.time_column is None:
+                raise PolicyViolation("NO_TIME_DIMENSION", f"{metric.name} has no time column to filter on")
+            bound = exp.cast(exp.Literal.string(day.isoformat()), "DATE")
+            conditions.append(op(this=_col(base.name, base.time_column), expression=bound))
         for flt in request.filters:
             model, column = self._resolve(flt.field, metric, principal)
             used[model.name] = model
             conditions.append(self._condition(_col(model.name, column), flt))
 
-        select = select.from_(exp.Table(this=exp.to_identifier(base.name, quoted=True)))
+        select = select.from_(exp.table_(base.name, quoted=True))
         for join in base.joins:
             if join.model in used:
                 select = select.join(
-                    exp.Table(this=exp.to_identifier(join.model, quoted=True)),
+                    exp.table_(join.model, quoted=True),
                     on=exp.EQ(this=_col(base.name, join.key), expression=_col(join.model, join.key)),
                     join_type="left",
                 )
@@ -225,8 +202,8 @@ class SemanticCompiler:
             values = flt.value if isinstance(flt.value, list) else [flt.value]
             if not values or len(values) > MAX_IN_VALUES:
                 raise PolicyViolation("BAD_FILTER", f"'{flt.op}' needs 1 to {MAX_IN_VALUES} values")
-            cond: exp.Expr = exp.In(this=column, expressions=[_literal(v) for v in values])
+            cond: exp.Expr = exp.In(this=column, expressions=[exp.convert(v) for v in values])
             return exp.Not(this=cond) if flt.op == "not_in" else cond
         if isinstance(flt.value, list):
             raise PolicyViolation("BAD_FILTER", f"'{flt.op}' takes a single value, not a list")
-        return _COMPARISONS[flt.op](this=column, expression=_literal(flt.value))
+        return _COMPARISONS[flt.op](this=column, expression=exp.convert(flt.value))

@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -90,13 +90,7 @@ class RecordingTransport(httpx2.AsyncBaseTransport):
         with self.path.open("w", encoding="utf-8") as fh:
             fh.write(json.dumps({"format": CASSETTE_FORMAT, **meta}, sort_keys=True) + "\n")
             for item in self.interactions:
-                fh.write(
-                    json.dumps(
-                        {"fingerprint": item.fingerprint, "status": item.status, "body": item.body},
-                        sort_keys=True,
-                    )
-                    + "\n"
-                )
+                fh.write(json.dumps(asdict(item), sort_keys=True) + "\n")
 
     async def aclose(self) -> None:
         await self.inner.aclose()
@@ -131,8 +125,4 @@ class ReplayTransport(httpx2.AsyncBaseTransport):
                 k: (item["fingerprint"].get(k), v) for k, v in got.items() if item["fingerprint"].get(k) != v
             }
             raise self._fail(f"{self.path.name} request {self.position}: drift {diff}; re-record this case")
-        return httpx2.Response(
-            item["status"],
-            headers={"content-type": "text/event-stream"},
-            content=item["body"].encode("utf-8"),
-        )
+        return _sse_response(item["body"].encode("utf-8"), item["status"])

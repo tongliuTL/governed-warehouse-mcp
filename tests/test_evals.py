@@ -76,10 +76,8 @@ def test_cli_all_writes_reports_and_passes_gates(db_path: Path, tmp_path: Path) 
 
 def test_cli_replay_uses_recorded_cassettes(db_path: Path, tmp_path: Path) -> None:
     """Record scripted runs as if they were live, then replay them through the CLI."""
-    import anthropic
-    import httpx2
 
-    from warehouse_evals.runner import run_case
+    from warehouse_evals.runner import offline_client, run_case
     from warehouse_evals.scripted import reference
     from warehouse_evals.transport import RecordingTransport, ScriptedTransport
 
@@ -87,9 +85,7 @@ def test_cli_replay_uses_recorded_cassettes(db_path: Path, tmp_path: Path) -> No
     cassettes = tmp_path / "cassettes"
     for case in load_agent_cases()[:3]:
         recorder = RecordingTransport(ScriptedTransport(reference(case)), cassettes / f"{case.id}.t0.jsonl")
-        client = anthropic.AsyncAnthropic(
-            api_key="x", max_retries=0, http_client=httpx2.AsyncClient(transport=recorder)
-        )
+        client = offline_client(recorder)
         run(lambda c=case, cl=client: run_case(ctx, c, cl, mode="live", policy="recorded"))
         recorder.save({"case": case.id, "model": "claude-opus-5-5", "effort": "high"})
     out = tmp_path / "replay"
