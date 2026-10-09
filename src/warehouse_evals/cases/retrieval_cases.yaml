@@ -1,0 +1,35 @@
+# Retrieval eval: does search_models put a correct model or metric near the top?
+# A query passes at k if any name in `relevant` is in the top k results (no access filtering).
+# Queries are phrased the way people ask, not the way tables are named.
+- {query: on-time delivery rate by lane, relevant: [on_time_rate, mart_lane_performance]}
+- {query: how punctual are our deliveries, relevant: [on_time_rate, fct_shipments]}
+- {query: which carriers are most reliable, relevant: [mart_carrier_scorecard, on_time_rate]}
+- {query: trucking companies with hazmat certification, relevant: [dim_carriers]}
+- {query: how long do trucks wait at the border, relevant: [mart_border_crossing_dwell, avg_border_dwell_hours]}
+- {query: customs delays at Laredo, relevant: [mart_border_crossing_dwell, avg_border_dwell_hours]}
+- {query: total revenue last quarter, relevant: [revenue_usd, fct_invoices, mart_customer_revenue_monthly]}
+- {query: profit margin by customer, relevant: [gross_margin_pct, gross_margin_usd, mart_customer_revenue_monthly]}
+- {query: unpaid invoices and receivables, relevant: [fct_invoices]}
+- {query: quote win rate, relevant: [quote_acceptance_rate, fct_quotes]}
+- {query: price per kilometer we quote, relevant: [avg_quoted_rate_per_km, fct_quotes]}
+- {query: number of loads shipped, relevant: [shipment_count, fct_shipments]}
+- {query: tonnage moved this year, relevant: [total_weight_kg]}
+- {query: average transit time in days, relevant: [avg_transit_days, fct_shipments]}
+- {query: shipper accounts by segment, relevant: [dim_customers]}
+- {query: customer contact information, relevant: [dim_customers]}
+- {query: origin destination routes and distances, relevant: [dim_lanes]}
+- {query: bills of lading extraction confidence, relevant: [fct_documents, mart_document_automation]}
+- {query: share of paperwork processed without human review, relevant: [auto_approval_rate, mart_document_automation]}
+- {query: straight through processing rate, relevant: [auto_approval_rate, mart_document_automation]}
+- {query: tracking milestones for a shipment, relevant: [fct_tracking_events]}
+- {query: when did the truck clear the border, relevant: [fct_tracking_events, mart_border_crossing_dwell]}
+- {query: dispatcher comments on a load, relevant: [fct_shipment_notes]}
+- {query: monthly lane service performance, relevant: [mart_lane_performance]}
+- {query: refrigerated reefer shipments, relevant: [fct_shipments]}
+- {query: FTL versus LTL volume, relevant: [fct_shipments, shipment_count]}
+- {query: carrier safety rating, relevant: [dim_carriers, mart_carrier_scorecard]}
+- {query: monthly revenue per account, relevant: [mart_customer_revenue_monthly]}
+- {query: delayed deliveries, relevant: [fct_tracking_events, on_time_rate, fct_shipments]}
+- {query: proof of delivery documents, relevant: [fct_documents]}
+- {query: border crossings with the most crossings, relevant: [mart_border_crossing_dwell]}
+- {query: customers in Mexico, relevant: [dim_customers]}

@@ -1,0 +1,27 @@
+# Held-out retrieval queries. Written in one pass after the ranker design was fixed and never
+# used to tune it: they report generalisation, while retrieval_cases.yaml is the dev set.
+# Phrasing deliberately avoids catalog names and aliases where a person plausibly would.
+- {query: "Are we keeping our delivery promises to customers?", relevant: [on_time_rate, fct_shipments]}
+- {query: "Which ports of entry slow our trucks down the most?", relevant: [mart_border_crossing_dwell, avg_border_dwell_hours]}
+- {query: "How much money did we make after paying carriers?", relevant: [gross_margin_usd, gross_margin_pct, fct_invoices]}
+- {query: "How many kilograms did we haul?", relevant: [total_weight_kg]}
+- {query: "Who hauls our freight and how big are their fleets?", relevant: [dim_carriers]}
+- {query: "Which customers have not paid yet?", relevant: [fct_invoices]}
+- {query: "How often do customers say yes to our prices?", relevant: [quote_acceptance_rate, fct_quotes]}
+- {query: "How many days does a load spend on the road?", relevant: [avg_transit_days, fct_shipments]}
+- {query: "Which documents needed a person to check them?", relevant: [fct_documents, mart_document_automation]}
+- {query: "What did dispatchers write about a delayed load?", relevant: [fct_shipment_notes]}
+- {query: "Distance in kilometers between Monterrey and Dallas", relevant: [dim_lanes]}
+- {query: "Which industries do our shippers come from?", relevant: [dim_customers]}
+- {query: "Monthly on-time trend for the Laredo to Chicago route", relevant: [mart_lane_performance, on_time_rate]}
+- {query: "Top accounts by billings this year", relevant: [revenue_usd, mart_customer_revenue_monthly, fct_invoices]}
+- {query: "When was the shipment picked up and when was it supposed to arrive?", relevant: [fct_shipments]}
+- {query: "How confident is the extraction model on customs paperwork?", relevant: [fct_documents, mart_document_automation]}
+- {query: "Ranking of carriers by late deliveries", relevant: [mart_carrier_scorecard, on_time_rate]}
+- {query: "How many trucks crossed into the US each month?", relevant: [mart_border_crossing_dwell]}
+- {query: "Average price we offered per kilometre", relevant: [avg_quoted_rate_per_km]}
+- {query: "Count of loads booked last month", relevant: [shipment_count, fct_shipments]}
+- {query: "Events showing a truck arrived at the border", relevant: [fct_tracking_events]}
+- {query: "Accessorial charges like detention and liftgate", relevant: [fct_invoices]}
+- {query: "Which carriers have a conditional safety rating?", relevant: [dim_carriers, mart_carrier_scorecard]}
+- {query: "Share of documents handled automatically", relevant: [auto_approval_rate, mart_document_automation]}

@@ -1,0 +1,360 @@
+# Semantic catalog: the single published contract between the warehouse and every agent.
+#
+# - Models describe tables and views: grain, access tier, columns, and which columns hold PII.
+# - Metrics are defined once, as code, on a base model. Agents query metrics by name and never
+#   re-derive the business logic in ad hoc SQL.
+# - Tiers are ordered: public < internal < restricted. A principal sees a model only when its
+#   token carries the scope for that tier. PII columns additionally require the pii:read scope.
+#
+# Every column listed here must exist in the warehouse with the stated type, and every warehouse
+# column must be listed. tests/test_catalog.py enforces both directions.
+schema_version: 1
+name: freight-warehouse
+
+models:
+  - name: dim_customers
+    kind: dimension
+    tier: internal
+    grain: one row per customer account
+    description: >-
+      Shipper accounts that book freight with us: company name, segment, home country and industry,
+      plus the account's primary contact. Use it to group shipments, quotes or revenue by customer,
+      customer segment, or customer country.
+    aliases: [shippers, accounts, clients, customer accounts]
+    columns:
+      - {name: customer_id, type: VARCHAR, description: "Customer account identifier."}
+      - {name: customer_name, type: VARCHAR, description: "Legal company name of the shipper."}
+      - {name: segment, type: VARCHAR, description: "Account size segment: enterprise, mid_market or smb."}
+      - {name: country, type: VARCHAR, description: "Customer home country (US, MX or CA)."}
+      - {name: industry, type: VARCHAR, description: "Industry vertical such as foods or auto_parts."}
+      - {name: contact_name, type: VARCHAR, description: "Primary contact person.", pii: true}
+      - {name: contact_email, type: VARCHAR, description: "Primary contact email address.", pii: true}
+      - {name: contact_phone, type: VARCHAR, description: "Primary contact phone number.", pii: true}
+      - {name: created_date, type: DATE, description: "Date the account was opened."}
+
+  - name: dim_carriers
+    kind: dimension
+    tier: public
+    grain: one row per trucking carrier
+    description: >-
+      Trucking companies that haul our freight, with home country, fleet size, safety rating and
+      hazmat certification. Use it to compare carriers or filter by carrier attributes.
+    aliases: [trucking companies, truckers, haulers, motor carriers, vendors]
+    columns:
+      - {name: carrier_id, type: VARCHAR, description: "Carrier identifier."}
+      - {name: carrier_name, type: VARCHAR, description: "Carrier company name."}
+      - {name: home_country, type: VARCHAR, description: "Country where the carrier is based."}
+      - {name: fleet_size, type: INTEGER, description: "Number of power units (tractors) in the fleet."}
+      - {name: safety_rating, type: VARCHAR, description: "Regulatory safety rating: satisfactory, conditional or unrated."}
+      - {name: hazmat_certified, type: BOOLEAN, description: "Whether the carrier may haul hazardous materials."}
+
+  - name: dim_lanes
+    kind: dimension
+    tier: public
+    grain: one row per origin-destination lane
+    description: >-
+      Freight lanes: origin and destination city, state and country, the border crossing used by
+      cross-border lanes, and road distance in kilometers.
+    aliases: [routes, corridors, origin destination pairs, trade lanes]
+    columns:
+      - {name: lane_id, type: VARCHAR, description: "Lane identifier."}
+      - {name: origin_city, type: VARCHAR, description: "Pickup city."}
+      - {name: origin_state, type: VARCHAR, description: "Pickup state or province code."}
+      - {name: origin_country, type: VARCHAR, description: "Pickup country."}
+      - {name: destination_city, type: VARCHAR, description: "Delivery city."}
+      - {name: destination_state, type: VARCHAR, description: "Delivery state or province code."}
+      - {name: destination_country, type: VARCHAR, description: "Delivery country."}
+      - {name: border_crossing, type: VARCHAR, description: "Port of entry for cross-border lanes (null for domestic lanes)."}
+      - {name: distance_km, type: INTEGER, description: "Road distance in kilometers."}
+
+  - name: fct_shipments
+    kind: fact
+    tier: internal
+    grain: one row per shipment (load)
+    description: >-
+      Every shipment booked, with customer, carrier, lane, mode (FTL full truckload or LTL less than
+      truckload), equipment, status, pickup, promised and actual delivery dates, weight and piece
+      count. The source for volume, on-time delivery and transit time.
+    aliases: [loads, freight, orders, moves, deliveries, on time, transit]
+    time_column: pickup_date
+    joins:
+      - {model: dim_customers, key: customer_id}
+      - {model: dim_carriers, key: carrier_id}
+      - {model: dim_lanes, key: lane_id}
+    columns:
+      - {name: shipment_id, type: VARCHAR, description: "Shipment identifier."}
+      - {name: customer_id, type: VARCHAR, description: "Booking customer."}
+      - {name: carrier_id, type: VARCHAR, description: "Carrier that hauled the load."}
+      - {name: lane_id, type: VARCHAR, description: "Lane the load moved on."}
+      - {name: mode, type: VARCHAR, description: "FTL (full truckload) or LTL (less than truckload)."}
+      - {name: equipment_type, type: VARCHAR, description: "Trailer type: dry_van, reefer (refrigerated) or flatbed."}
+      - {name: status, type: VARCHAR, description: "delivered, in_transit or cancelled."}
+      - {name: booked_date, type: DATE, description: "Date the customer booked the load."}
+      - {name: pickup_date, type: DATE, description: "Date the carrier picked up the load."}
+      - {name: promised_delivery_date, type: DATE, description: "Delivery date promised to the customer."}
+      - {name: delivered_date, type: DATE, description: "Actual delivery date (null until delivered)."}
+      - {name: weight_kg, type: DOUBLE, description: "Gross weight in kilograms."}
+      - {name: pieces, type: INTEGER, description: "Number of pallets or pieces."}
+      - {name: is_cross_border, type: BOOLEAN, description: "Whether the load crossed an international border."}
+
+  - name: fct_tracking_events
+    kind: fact
+    tier: internal
+    grain: one row per tracking milestone
+    description: >-
+      Tracking milestones for each shipment: picked up, border arrival, border cleared, delay
+      reported and delivered, with timestamp and location. Use it for dwell time and delay analysis.
+    aliases: [milestones, tracking, status updates, visibility events, dwell]
+    time_column: event_ts
+    columns:
+      - {name: event_id, type: VARCHAR, description: "Event identifier."}
+      - {name: shipment_id, type: VARCHAR, description: "Shipment the event belongs to."}
+      - {name: event_type, type: VARCHAR, description: "picked_up, border_arrival, border_cleared, delay_reported or delivered."}
+      - {name: event_ts, type: TIMESTAMP, description: "When the milestone happened."}
+      - {name: location, type: VARCHAR, description: "City or border crossing where it happened."}
+
+  - name: fct_documents
+    kind: fact
+    tier: internal
+    grain: one row per shipping document received
+    description: >-
+      Shipping paperwork processed by document extraction: bills of lading, commercial invoices,
+      customs entries and proofs of delivery, with extraction confidence and whether the document
+      was auto approved, reviewed by a person, or rejected.
+    aliases: [paperwork, bills of lading, pod, proof of delivery, customs documents, extraction]
+    time_column: received_date
+    columns:
+      - {name: document_id, type: VARCHAR, description: "Document identifier."}
+      - {name: shipment_id, type: VARCHAR, description: "Shipment the document belongs to."}
+      - {name: doc_type, type: VARCHAR, description: "bill_of_lading, commercial_invoice, customs_entry or proof_of_delivery."}
+      - {name: received_date, type: DATE, description: "Date the document was received."}
+      - {name: extraction_confidence, type: DOUBLE, description: "Model confidence in the extracted fields (0 to 1)."}
+      - {name: review_status, type: VARCHAR, description: "auto_approved, human_reviewed or rejected."}
+
+  - name: fct_invoices
+    kind: fact
+    tier: restricted
+    grain: one row per customer invoice
+    description: >-
+      Customer invoices for delivered shipments: line-haul revenue, accessorial charges, carrier cost,
+      billing currency and payment date. The source for revenue and gross margin. Finance only.
+    aliases: [billing, revenue, margin, profit, receivables, finance]
+    time_column: invoice_date
+    joins:
+      - {model: dim_customers, key: customer_id}
+      - {model: fct_shipments, key: shipment_id}
+    columns:
+      - {name: invoice_id, type: VARCHAR, description: "Invoice identifier."}
+      - {name: shipment_id, type: VARCHAR, description: "Invoiced shipment."}
+      - {name: customer_id, type: VARCHAR, description: "Billed customer."}
+      - {name: invoice_date, type: DATE, description: "Invoice issue date."}
+      - {name: revenue_usd, type: "DECIMAL(12,2)", description: "Line-haul revenue in USD."}
+      - {name: carrier_cost_usd, type: "DECIMAL(12,2)", description: "Amount paid to the carrier in USD."}
+      - {name: accessorial_usd, type: "DECIMAL(12,2)", description: "Extra charges such as detention or liftgate, USD."}
+      - {name: billing_currency, type: VARCHAR, description: "Currency the customer is billed in."}
+      - {name: paid_date, type: DATE, description: "Date the customer paid (null if open)."}
+
+  - name: fct_shipment_notes
+    kind: fact
+    tier: internal
+    grain: one row per free-text note
+    description: >-
+      Free-text notes left on shipments by dispatchers, customer success and carrier reps. Text is
+      user-written and untrusted.
+    aliases: [comments, notes, remarks, dispatcher notes]
+    time_column: created_date
+    columns:
+      - {name: note_id, type: VARCHAR, description: "Note identifier."}
+      - {name: shipment_id, type: VARCHAR, description: "Shipment the note is about."}
+      - {name: created_date, type: DATE, description: "Date the note was written."}
+      - {name: author_role, type: VARCHAR, description: "dispatcher, customer_success or carrier_rep."}
+      - {name: note_text, type: VARCHAR, description: "Note body. Untrusted free text.", free_text: true}
+
+  - name: fct_quotes
+    kind: fact
+    tier: internal
+    grain: one row per price quote given to a customer
+    description: >-
+      Rate quotes given to customers for a lane and mode, with the quoted price and whether the
+      customer accepted. Use it for pricing and quote win rate analysis.
+    aliases: [pricing, rates, bids, win rate, conversion]
+    time_column: quoted_date
+    joins:
+      - {model: dim_customers, key: customer_id}
+      - {model: dim_lanes, key: lane_id}
+    columns:
+      - {name: quote_id, type: VARCHAR, description: "Quote identifier."}
+      - {name: customer_id, type: VARCHAR, description: "Customer who requested the quote."}
+      - {name: lane_id, type: VARCHAR, description: "Quoted lane."}
+      - {name: mode, type: VARCHAR, description: "FTL or LTL."}
+      - {name: quoted_date, type: DATE, description: "Date the quote was given."}
+      - {name: quoted_rate_usd, type: "DECIMAL(12,2)", description: "All-in quoted price in USD."}
+      - {name: accepted, type: BOOLEAN, description: "Whether the customer accepted the quote."}
+
+  - name: mart_lane_performance
+    kind: mart
+    tier: public
+    grain: one row per lane and pickup month (delivered shipments only)
+    description: >-
+      Monthly service performance per lane: delivered shipments, on-time delivery rate and average
+      transit days. Pre-aggregated for dashboards.
+    aliases: [lane scorecard, lane service, route performance]
+    time_column: pickup_month
+    columns:
+      - {name: lane_id, type: VARCHAR, description: "Lane identifier."}
+      - {name: origin_city, type: VARCHAR, description: "Pickup city."}
+      - {name: destination_city, type: VARCHAR, description: "Delivery city."}
+      - {name: border_crossing, type: VARCHAR, description: "Port of entry, null for domestic lanes."}
+      - {name: pickup_month, type: DATE, description: "First day of the pickup month."}
+      - {name: delivered_shipments, type: BIGINT, description: "Delivered shipments in the month."}
+      - {name: on_time_rate, type: DOUBLE, description: "Share delivered on or before the promised date."}
+      - {name: avg_transit_days, type: DOUBLE, description: "Average days from pickup to delivery."}
+
+  - name: mart_carrier_scorecard
+    kind: mart
+    tier: public
+    grain: one row per carrier (all time, delivered shipments only)
+    description: >-
+      Carrier scorecard: delivered shipments, on-time delivery rate and average transit days per
+      carrier, with safety rating. Use it to rank carriers by reliability.
+    aliases: [carrier performance, carrier ranking, vendor scorecard, reliability]
+    columns:
+      - {name: carrier_id, type: VARCHAR, description: "Carrier identifier."}
+      - {name: carrier_name, type: VARCHAR, description: "Carrier company name."}
+      - {name: safety_rating, type: VARCHAR, description: "Regulatory safety rating."}
+      - {name: delivered_shipments, type: BIGINT, description: "Delivered shipments hauled."}
+      - {name: on_time_rate, type: DOUBLE, description: "Share delivered on or before the promised date."}
+      - {name: avg_transit_days, type: DOUBLE, description: "Average days from pickup to delivery."}
+
+  - name: mart_border_crossing_dwell
+    kind: mart
+    tier: public
+    grain: one row per border crossing and month
+    description: >-
+      How long trucks wait at each border crossing: crossings and average dwell hours between border
+      arrival and border cleared, by month. Use it to compare ports of entry such as Laredo or Nogales.
+    aliases: [border wait, customs delay, port of entry, crossing time, dwell time]
+    time_column: crossing_month
+    columns:
+      - {name: border_crossing, type: VARCHAR, description: "Port of entry."}
+      - {name: crossing_month, type: DATE, description: "First day of the month of border arrival."}
+      - {name: crossings, type: BIGINT, description: "Shipments that cleared the border."}
+      - {name: avg_dwell_hours, type: DOUBLE, description: "Average hours from border arrival to clearance."}
+
+  - name: mart_document_automation
+    kind: mart
+    tier: internal
+    grain: one row per document type and month
+    description: >-
+      Document automation health by document type and month: documents received, share auto
+      approved without human review, and average extraction confidence.
+    aliases: [automation rate, straight through processing, extraction quality, review queue]
+    time_column: received_month
+    columns:
+      - {name: doc_type, type: VARCHAR, description: "Document type."}
+      - {name: received_month, type: DATE, description: "First day of the month received."}
+      - {name: documents, type: BIGINT, description: "Documents received."}
+      - {name: auto_approval_rate, type: DOUBLE, description: "Share auto approved without review."}
+      - {name: avg_confidence, type: DOUBLE, description: "Average extraction confidence."}
+
+  - name: mart_customer_revenue_monthly
+    kind: mart
+    tier: restricted
+    grain: one row per customer and invoice month
+    description: >-
+      Monthly revenue and gross margin per customer, including accessorials. Finance only.
+    aliases: [customer profitability, account revenue, monthly revenue, margin by customer]
+    time_column: invoice_month
+    columns:
+      - {name: customer_id, type: VARCHAR, description: "Customer identifier."}
+      - {name: customer_name, type: VARCHAR, description: "Customer company name."}
+      - {name: segment, type: VARCHAR, description: "Customer segment."}
+      - {name: invoice_month, type: DATE, description: "First day of the invoice month."}
+      - {name: revenue_usd, type: "DECIMAL(38,2)", description: "Revenue including accessorials, USD."}
+      - {name: gross_margin_usd, type: "DECIMAL(38,2)", description: "Revenue minus carrier cost, USD."}
+
+metrics:
+  - name: shipment_count
+    model: fct_shipments
+    description: Shipments booked, excluding cancelled ones.
+    expression: COUNT(*)
+    where: "fct_shipments.status <> 'cancelled'"
+    format: count
+    synonyms: [volume, loads, number of shipments]
+
+  - name: on_time_rate
+    model: fct_shipments
+    description: Share of delivered shipments that arrived on or before the promised delivery date.
+    expression: AVG(CASE WHEN fct_shipments.delivered_date <= fct_shipments.promised_delivery_date THEN 1.0 ELSE 0.0 END)
+    where: "fct_shipments.status = 'delivered'"
+    format: ratio
+    synonyms: [on time delivery, OTD, service level, reliability, punctuality]
+
+  - name: avg_transit_days
+    model: fct_shipments
+    description: Average days from pickup to delivery for delivered shipments.
+    expression: AVG(fct_shipments.delivered_date - fct_shipments.pickup_date)
+    where: "fct_shipments.status = 'delivered'"
+    format: days
+    synonyms: [transit time, lead time, days in transit]
+
+  - name: total_weight_kg
+    model: fct_shipments
+    description: Total gross weight shipped in kilograms, excluding cancelled shipments.
+    expression: SUM(fct_shipments.weight_kg)
+    where: "fct_shipments.status <> 'cancelled'"
+    format: number
+    synonyms: [tonnage, weight moved]
+
+  - name: revenue_usd
+    model: fct_invoices
+    description: Invoiced revenue in USD including accessorial charges.
+    expression: SUM(fct_invoices.revenue_usd + fct_invoices.accessorial_usd)
+    format: usd
+    synonyms: [sales, billings, top line]
+
+  - name: gross_margin_usd
+    model: fct_invoices
+    description: Revenue including accessorials minus carrier cost, in USD.
+    expression: SUM(fct_invoices.revenue_usd + fct_invoices.accessorial_usd - fct_invoices.carrier_cost_usd)
+    format: usd
+    synonyms: [profit, gross profit, margin dollars]
+
+  - name: gross_margin_pct
+    model: fct_invoices
+    description: Gross margin as a share of revenue (both including accessorials).
+    expression: >-
+      SUM(fct_invoices.revenue_usd + fct_invoices.accessorial_usd - fct_invoices.carrier_cost_usd)
+      / NULLIF(SUM(fct_invoices.revenue_usd + fct_invoices.accessorial_usd), 0)
+    format: ratio
+    synonyms: [margin percent, margin rate, profitability]
+
+  - name: quote_acceptance_rate
+    model: fct_quotes
+    description: Share of quotes the customer accepted.
+    expression: AVG(CASE WHEN fct_quotes.accepted THEN 1.0 ELSE 0.0 END)
+    format: ratio
+    synonyms: [win rate, quote conversion, hit rate]
+
+  - name: avg_quoted_rate_per_km
+    model: fct_quotes
+    description: Average quoted price per kilometer (total quoted USD over total lane kilometers).
+    expression: SUM(fct_quotes.quoted_rate_usd) / NULLIF(SUM(dim_lanes.distance_km), 0)
+    format: usd
+    synonyms: [rate per km, price per kilometer, unit price]
+
+  - name: auto_approval_rate
+    model: fct_documents
+    description: Share of documents auto approved without human review.
+    expression: AVG(CASE WHEN fct_documents.review_status = 'auto_approved' THEN 1.0 ELSE 0.0 END)
+    format: ratio
+    synonyms: [automation rate, straight through processing, touchless rate]
+
+  - name: avg_border_dwell_hours
+    model: mart_border_crossing_dwell
+    description: Crossing-weighted average hours trucks wait between border arrival and clearance.
+    expression: >-
+      SUM(mart_border_crossing_dwell.avg_dwell_hours * mart_border_crossing_dwell.crossings)
+      / NULLIF(SUM(mart_border_crossing_dwell.crossings), 0)
+    format: hours
+    synonyms: [border wait time, customs delay, dwell time]
