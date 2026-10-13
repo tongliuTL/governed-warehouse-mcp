@@ -1,6 +1,6 @@
 # Eval report
 
-Catalog `v1-42c3e5f7aec9` · data seed `20261009` · 2026-10-09 19:06 UTC
+Catalog `v1-42c3e5f7aec9` · data seed `20261009` · 2026-10-13 21:02 UTC
 
 Offline run. Agent cases use scripted model turns streamed through the real Anthropic SDK and MCP server: they verify the harness, the server and the graders, not a model's skill. Replayed sections, when present, are recorded live runs.
 
