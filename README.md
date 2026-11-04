@@ -225,6 +225,7 @@ token's scopes.
 uv run gwm-eval all --gate             # offline: what CI runs
 uv run gwm-eval live --trials 3 --record cassettes/ --stream   # real Claude API
 uv run gwm-eval replay cassettes/      # replay recorded live runs offline
+uv run gwm-eval calibrate --live      # calibrate the LLM judge against graders and labels
 ```
 
 The harness has three suites. [docs/evals.md](docs/evals.md) describes the method in detail.

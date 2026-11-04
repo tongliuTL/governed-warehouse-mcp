@@ -10,6 +10,10 @@ The first version; not yet released.
 
 ### Added
 
+- **Calibrated LLM judge.** A versioned rubric (`answer_quality_v1`), a Claude judge with
+  structured per-criterion verdicts and an offline verdict cache, and `gwm-eval calibrate`,
+  which reports agreement, Cohen's kappa and confusion matrices against the validated graders
+  and against blind human labels.
 - **Governed MCP server.** It serves five tools (`search_models`, `describe_model`,
   `list_metrics`, `query_metric`, `run_sql`) and the `catalog://version` resource, over stdio,
   Streamable HTTP or in-process.

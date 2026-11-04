@@ -29,6 +29,8 @@ from warehouse_mcp.server import GovernedWarehouse, ServerConfig
 from warehouse_mcp.warehouse import Warehouse
 
 Mode = Literal["scripted", "replay", "live"]
+# Tool outputs are kept in results (truncated) so a judge or a human can check grounding.
+TOOL_OUTPUT_CHARS = 4000
 
 
 @dataclass
@@ -184,6 +186,7 @@ async def run_case(
                 "is_error": c.is_error,
                 "error_code": c.error_code,
                 "latency_ms": c.latency_ms,
+                "output": c.output[:TOOL_OUTPUT_CHARS],
             }
             for c in traj.tool_calls
         ],

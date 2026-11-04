@@ -3,6 +3,8 @@
 gwm-eval all                     # offline: retrieval + grader validation + scripted reference (+ replay)
 gwm-eval live --trials 3 --record cassettes/   # real Claude API, records cassettes for CI replay
 gwm-eval replay cassettes/       # re-run recorded live runs offline
+gwm-eval calibrate --live        # judge every scripted trajectory, compare with graders (caches verdicts)
+gwm-eval calibrate               # same, offline from the verdict cache
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import anyio
 
 from warehouse_evals.agent import DEFAULT_MODEL
 from warehouse_evals.cases import load_agent_cases, load_retrieval_cases
+from warehouse_evals.judge import DEFAULT_JUDGE_EFFORT, DEFAULT_JUDGE_MODEL
 from warehouse_evals.report import Report, render_markdown
 from warehouse_evals.retrieval import evaluate
 from warehouse_evals.runner import EvalContext, result_dict, run_live, run_replay, run_scripted
@@ -145,6 +148,87 @@ async def _replay(args: argparse.Namespace) -> int:
     return 0 if all(r.passed for r in results) or not args.gate else 1
 
 
+async def _calibrate(args: argparse.Namespace) -> int:
+    import anthropic
+
+    from warehouse_evals.calibration import (
+        collect,
+        compare_with_graders,
+        compare_with_humans,
+        export_label_template,
+        load_labels,
+        render_markdown,
+    )
+    from warehouse_evals.judge import CachedJudge, ClaudeJudge, Judge, MissingJudgment, load_rubric
+
+    rubric = load_rubric(args.rubric)
+    cache = args.judge_cache or Path("judgments") / f"{args.rubric}.{args.model}.{args.effort}.jsonl"
+    inner: Judge | None = None
+    if args.live:
+        inner = ClaudeJudge(anthropic.AsyncAnthropic(), rubric, model=args.model, effort=args.effort)
+    judge = CachedJudge(cache, rubric, inner, model=args.model, effort=args.effort)
+    ctx = _context(args)
+    try:
+        items = await collect(ctx, load_agent_cases(), judge, concurrency=args.concurrency)
+    except MissingJudgment as exc:
+        print(f"{exc} (cache: {cache})", file=sys.stderr)
+        return 1
+    finally:
+        ctx.close()
+    if args.live:
+        print(f"judge cache {cache}: {judge.hits} hits, {judge.misses} new verdicts", file=sys.stderr)
+
+    tables = {"deterministic graders": compare_with_graders(items)}
+    if args.labels:
+        tables["human labels"] = compare_with_humans(items, load_labels(args.labels), rubric)
+    if args.export_labels:
+        rows = export_label_template(items, rubric, args.export_labels)
+        print(f"wrote {rows} label rows to {args.export_labels}", file=sys.stderr)
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    stem = args.out / f"calibration-{rubric.id}-v{rubric.version}"
+    stem.with_suffix(".md").write_text(
+        render_markdown(rubric, args.model, args.effort, items, tables), encoding="utf-8"
+    )
+    payload = {
+        "rubric": rubric.key,
+        "model": args.model,
+        "effort": args.effort,
+        "tables": {
+            name: [
+                {
+                    "criterion": a.criterion,
+                    "n": a.n,
+                    "accuracy": a.accuracy,
+                    "kappa": a.kappa,
+                    "tp": a.tp,
+                    "fp": a.fp,
+                    "fn": a.fn,
+                    "tn": a.tn,
+                    "applicability_mismatches": a.applicability,
+                    "disagreements": a.disagreements,
+                }
+                for a in agreements
+            ]
+            for name, agreements in tables.items()
+        },
+        "judgments": [i.judgment.to_dict() for i in items],
+    }
+    stem.with_suffix(".json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {stem}.md and {stem}.json", file=sys.stderr)
+
+    if args.min_kappa is not None:
+        low = [
+            f"{a.criterion} ({a.kappa:.2f})"
+            for a in tables["deterministic graders"]
+            if a.kappa is not None and a.kappa < args.min_kappa
+        ]
+        if low:
+            print(f"GATE FAILED: judge kappa below {args.min_kappa}: " + ", ".join(low), file=sys.stderr)
+            return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gwm-eval", description=__doc__, formatter_class=argparse.RawTextHelpFormatter
@@ -168,6 +252,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_replay.add_argument("cassettes", type=Path)
     p_replay.add_argument("--gate", action="store_true")
     p_replay.set_defaults(func=_replay)
+    p_cal = sub.add_parser("calibrate", help="calibrate the LLM judge against graders and human labels")
+    p_cal.add_argument("--rubric", default="answer_quality_v1")
+    p_cal.add_argument("--model", default=DEFAULT_JUDGE_MODEL)
+    p_cal.add_argument(
+        "--effort", default=DEFAULT_JUDGE_EFFORT, choices=("low", "medium", "high", "xhigh", "max")
+    )
+    p_cal.add_argument(
+        "--judge-cache", type=Path, help="verdict cache (default judgments/<rubric>.<model>.<effort>.jsonl)"
+    )
+    p_cal.add_argument(
+        "--live", action="store_true", help="call the Claude API for verdicts missing from the cache"
+    )
+    p_cal.add_argument("--concurrency", type=int, default=4)
+    p_cal.add_argument("--labels", type=Path, help="human labels (JSONL) to compare against")
+    p_cal.add_argument("--export-labels", type=Path, help="write a blank, blind labelling template here")
+    p_cal.add_argument("--min-kappa", type=float, help="exit 1 if any grader-mapped criterion is below this")
+    p_cal.set_defaults(func=_calibrate)
     return parser
 
 
