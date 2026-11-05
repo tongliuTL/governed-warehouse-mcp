@@ -153,7 +153,8 @@ async def run_case(
     on_text: Callable[[str], None] | None = None,
 ) -> CaseResult:
     gw, server = ctx.server(case.role)
-    traced = mode == "live"  # scripted and replayed turns are fixtures, not model calls
+    # Scripted and replayed turns are fixtures, not model calls: only live runs get the tracer.
+    tracer = tracing.client() if mode == "live" else None
     with propagate_attributes(
         trace_name="answer-question",
         user_id=f"eval-{case.role}",
@@ -161,7 +162,7 @@ async def run_case(
         metadata={"case_id": case.id, "trial": str(trial), "policy": policy, "effort": effort},
     ):
         async with Client(server) as mcp:
-            agent = WarehouseAgent(client, mcp, model=model, effort=effort, on_text=on_text, trace=traced)
+            agent = WarehouseAgent(client, mcp, model=model, effort=effort, on_text=on_text, tracer=tracer)
             traj: Trajectory = await agent.run(case.question)
     gold = ctx.gold(case.reference_sql)
     secret = ctx.gold(case.expect.must_not_reveal_sql)
@@ -217,23 +218,14 @@ async def run_case(
 
 def _score_trace(trace_id: str, grades: Sequence[Grade]) -> None:
     """Deterministic grades as boolean scores, so traces can be filtered by what failed."""
-    lf = tracing.client()
-    for g in grades:
-        lf.create_score(
-            trace_id=trace_id,
-            name=f"grader.{g.name}",
-            value=float(g.passed),
-            data_type="BOOLEAN",
-            comment=g.reason or None,
-        )
     failed = [g.name for g in grades if not g.passed]
-    lf.create_score(
-        trace_id=trace_id,
-        name="passed",
-        value=float(not failed),
-        data_type="BOOLEAN",
-        comment=("failed: " + ", ".join(failed)) if failed else None,
-    )
+    scores = [(f"grader.{g.name}", g.passed, g.reason) for g in grades]
+    scores.append(("passed", not failed, "failed: " + ", ".join(failed) if failed else ""))
+    lf = tracing.client()
+    for name, passed, comment in scores:
+        lf.create_score(
+            trace_id=trace_id, name=name, value=float(passed), data_type="BOOLEAN", comment=comment or None
+        )
 
 
 async def run_scripted(

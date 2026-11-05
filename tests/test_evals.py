@@ -16,11 +16,6 @@ from warehouse_evals.validation import validate_graders
 from warehouse_mcp.catalog import Catalog
 
 
-@pytest.fixture(scope="module")
-def ctx(db_path: Path) -> EvalContext:
-    return EvalContext(db_path)
-
-
 def test_cases_load_and_are_well_formed(catalog: Catalog) -> None:
     cases = load_agent_cases()
     assert len(cases) >= 15 and {c.suite for c in cases} == {"answer", "governance", "injection"}

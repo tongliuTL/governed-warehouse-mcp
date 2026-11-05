@@ -8,6 +8,7 @@ import pytest
 
 from warehouse_evals import cli as eval_cli
 from warehouse_evals import tracing
+from warehouse_evals.runner import EvalContext
 from warehouse_mcp.catalog import Catalog, load_catalog
 from warehouse_mcp.policy import Principal
 from warehouse_mcp.server import GovernedWarehouse, ServerConfig
@@ -73,6 +74,13 @@ def partner() -> Principal:
 @pytest.fixture
 def support() -> Principal:
     return Principal.for_role("support")
+
+
+@pytest.fixture(scope="session")
+def ctx(db_path: Path) -> Iterator[EvalContext]:
+    ctx = EvalContext(db_path)
+    yield ctx
+    ctx.close()
 
 
 @pytest.fixture(autouse=True)

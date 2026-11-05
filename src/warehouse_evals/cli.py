@@ -134,9 +134,7 @@ def _setting(name: str, default: str) -> str:
     Read without loading .env into the environment, so an offline ``calibrate`` finds the same
     model (and so the same verdict cache) as the live run that filled it, without its keys.
     """
-    return (
-        os.environ.get(name) or (dotenv_values(ENV_FILE).get(name) if ENV_FILE.exists() else None) or default
-    )
+    return os.environ.get(name) or dotenv_values(ENV_FILE).get(name) or default
 
 
 def _start_tracing(ctx: EvalContext) -> None:
@@ -199,16 +197,15 @@ async def _calibrate(args: argparse.Namespace) -> int:
     rubric = load_rubric(args.rubric)
     args.model = args.model or _setting("GWM_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
     cache = args.judge_cache or Path("judgments") / f"{args.rubric}.{args.model}.{args.effort}.jsonl"
+    ctx = _context(args)
     inner: Judge | None = None
     if args.live:
         _load_env()
+        _start_tracing(ctx)  # judge calls only; the scripted runs being judged are not traced
         inner = ClaudeJudge(
-            anthropic.AsyncAnthropic(), rubric, model=args.model, effort=args.effort, trace=True
+            anthropic.AsyncAnthropic(), rubric, model=args.model, effort=args.effort, tracer=tracing.client()
         )
     judge = CachedJudge(cache, rubric, inner, model=args.model, effort=args.effort)
-    ctx = _context(args)
-    if args.live:
-        _start_tracing(ctx)  # judge calls only; the scripted runs being judged are not traced
     try:
         items = await collect(ctx, load_agent_cases(), judge, concurrency=args.concurrency)
     except MissingJudgment as exc:

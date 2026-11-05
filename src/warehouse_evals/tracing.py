@@ -53,21 +53,18 @@ _state = _State()
 _NOOP_PUBLIC_KEY, _NOOP_SECRET_KEY = "pk-lf-disabled", "sk-lf-disabled"
 
 
-def credentials_present() -> bool:
-    return bool(os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY"))
-
-
 def _mask_spans(*, params: MaskOtelSpansParams) -> MaskOtelSpansResult | None:
     pattern = _state.pii
     if pattern is None:
         return None
     patches = {}
     for ident, span in params.spans.items():
-        changed = {
-            key: pattern.sub(REDACTED, value)
-            for key, value in span.attributes.items()
-            if isinstance(value, str) and pattern.search(value)
-        }
+        changed = {}
+        for key, value in span.attributes.items():
+            if isinstance(value, str):
+                masked, hits = pattern.subn(REDACTED, value)
+                if hits:
+                    changed[key] = masked
         if changed:
             patches[ident] = OtelSpanPatch(set_attributes=changed)
     return MaskOtelSpansResult(span_patches=patches)
@@ -80,9 +77,10 @@ def set_pii_values(values: Iterable[str]) -> None:
 
 
 def enable() -> bool:
-    """Turn tracing on for this process when credentials are set. Returns whether it is on
-    (``LANGFUSE_TRACING_ENABLED=false`` still turns it off)."""
-    if not credentials_present():
+    """Turn tracing on for this process. Returns whether it is on: it needs both keys, and
+    ``LANGFUSE_TRACING_ENABLED=false`` keeps it off."""
+    keys = os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY")
+    if not keys or os.environ.get("LANGFUSE_TRACING_ENABLED", "true").lower() == "false":
         return False
     if _state.live is None:
         _state.live = Langfuse(
@@ -90,25 +88,25 @@ def enable() -> bool:
             mask_otel_spans=_mask_spans,
             should_export_span=SHOULD_EXPORT_SPAN,
         )
-    return enabled()
+    return True
 
 
-def enabled() -> bool:
-    return _state.live is not None and bool(_state.live._tracing_enabled)
-
-
-def client(traced: bool = True) -> Langfuse:
-    """The live client when ``traced`` and tracing is on, else one whose observations are no-ops.
-
-    The no-op client lets instrumented code run unchanged in scripted, replayed and test runs.
-    """
-    if traced and _state.live is not None:
-        return _state.live
+def noop() -> Langfuse:
+    """A client whose observations are no-ops, so instrumented code runs unchanged untraced."""
     if _state.noop is None:
         _state.noop = Langfuse(
             public_key=_NOOP_PUBLIC_KEY, secret_key=_NOOP_SECRET_KEY, tracing_enabled=False
         )
     return _state.noop
+
+
+def client() -> Langfuse:
+    """The live client once ``enable`` succeeded, else the no-op one."""
+    return _state.live or noop()
+
+
+def is_live(tracer: Langfuse) -> bool:
+    return tracer is _state.live
 
 
 def flush() -> None:

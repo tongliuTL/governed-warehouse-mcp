@@ -26,6 +26,7 @@ from anthropic.types.beta import BetaMessageParam, BetaToolResultBlockParam
 from jsonschema.exceptions import best_match
 from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
+from langfuse import Langfuse
 from mcp import Client
 
 from warehouse_evals import tracing
@@ -110,7 +111,7 @@ class WarehouseAgent:
         max_tokens: int = 64_000,
         on_text: Callable[[str], None] | None = None,
         system: str = SYSTEM_PROMPT,
-        trace: bool = False,
+        tracer: Langfuse | None = None,
     ) -> None:
         self.client = client
         self.mcp = mcp
@@ -120,14 +121,16 @@ class WarehouseAgent:
         self.max_tokens = max_tokens
         self.on_text = on_text
         self.system = system
-        self.trace = trace  # only runs against the real API are traced
+        # Only runs against the real API are given a live tracer; the default records nothing.
+        self.tracer = tracer or tracing.noop()
+        self.traced = tracing.is_live(self.tracer)
 
     async def run(self, question: str) -> Trajectory:
-        with tracing.client(self.trace).start_as_current_observation(
+        with self.tracer.start_as_current_observation(
             name="answer-question", as_type="agent", input=question
         ) as span:
             traj = await self._run(question)
-            traj.trace_id = span.trace_id if self.trace and tracing.enabled() else None
+            traj.trace_id = span.trace_id if self.traced else None
             span.update(
                 output=traj.final_text,
                 level="ERROR" if traj.error else "WARNING" if traj.stop != "end_turn" else None,
@@ -144,7 +147,7 @@ class WarehouseAgent:
         return traj
 
     async def _run(self, question: str) -> Trajectory:  # noqa: PLR0912, PLR0915 - one readable loop
-        lf = tracing.client(self.trace)
+        lf = self.tracer
         tools = (await self.mcp.list_tools()).tools
         # Schemas are fixed for the run: check and compile each once, not on every tool call.
         validators: dict[str, Validator] = {}
@@ -152,6 +155,7 @@ class WarehouseAgent:
             cls = validator_for(t.input_schema)
             cls.check_schema(t.input_schema)
             validators[t.name] = cls(t.input_schema)
+        tool_names = [t.name for t in tools]
         params: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -171,59 +175,61 @@ class WarehouseAgent:
                     traj.stop = "max_turns"
                     break
                 raw_inputs: dict[int, list[str]] = {}
-                gen = lf.start_observation(
+                with lf.start_as_current_observation(
                     name="call-model",
                     as_type="generation",
-                    input=tracing.chat_input(self.system, messages),
+                    # Serialising the growing history is only worth it when it is exported.
+                    input=tracing.chat_input(self.system, messages) if self.traced else None,
                     model=self.model,
                     model_parameters={
                         "max_tokens": self.max_tokens,
                         "effort": self.effort,
                         "thinking": "adaptive",
                     },
-                    metadata={"turn": traj.turns, "tools": [t.name for t in tools]},
-                )
-                first_delta = False
-                try:
-                    async with self.client.beta.messages.stream(messages=messages, **params) as stream:
-                        async for event in stream:
-                            if event.type == "content_block_delta" and not first_delta:
-                                first_delta = True
-                                gen.update(completion_start_time=datetime.now(UTC))
-                            if event.type == "content_block_delta" and event.delta.type == "input_json_delta":
-                                raw_inputs.setdefault(event.index, []).append(event.delta.partial_json)
-                            elif event.type == "text":
-                                traj.text_deltas += 1
-                                if traj.first_token_ms is None:
-                                    traj.first_token_ms = round((time.perf_counter() - start) * 1000)
-                                if self.on_text:
-                                    self.on_text(event.text)
-                            elif event.type == "input_json":
-                                traj.input_json_deltas += 1
-                        message = await stream.get_final_message()
-                except ValueError as exc:
-                    # Tool input JSON the SDK could not parse at all. The block never completed,
-                    # so there is no tool_use id to answer: re-issue the turn, bounded.
-                    gen.update(level="WARNING", status_message=f"unparseable tool input JSON: {exc}")
-                    gen.end()
-                    traj.json_retries += 1
-                    if traj.json_retries > 2:
-                        traj.stop = "invalid_json"
-                        break
-                    continue
-                except anthropic.APIError as exc:
-                    gen.update(level="ERROR", status_message=f"{type(exc).__name__}: {exc}")
-                    gen.end()
-                    raise
-                gen.update(
-                    # The served model, which differs from the requested one after a fallback.
-                    model=message.model,
-                    output=tracing.content_dump(message.content),
-                    usage_details=tracing.usage_details(message.usage),
-                    level="WARNING" if message.stop_reason in ("refusal", "max_tokens") else None,
-                    metadata={"stop_reason": message.stop_reason, "message_id": message.id},
-                )
-                gen.end()
+                    metadata={"turn": traj.turns, "tools": tool_names},
+                ) as gen:
+                    # Any first delta, thinking included; traj.first_token_ms counts text only.
+                    first_delta = False
+                    try:
+                        async with self.client.beta.messages.stream(messages=messages, **params) as stream:
+                            async for event in stream:
+                                if event.type == "content_block_delta" and not first_delta:
+                                    first_delta = True
+                                    gen.update(completion_start_time=datetime.now(UTC))
+                                if (
+                                    event.type == "content_block_delta"
+                                    and event.delta.type == "input_json_delta"
+                                ):
+                                    raw_inputs.setdefault(event.index, []).append(event.delta.partial_json)
+                                elif event.type == "text":
+                                    traj.text_deltas += 1
+                                    if traj.first_token_ms is None:
+                                        traj.first_token_ms = round((time.perf_counter() - start) * 1000)
+                                    if self.on_text:
+                                        self.on_text(event.text)
+                                elif event.type == "input_json":
+                                    traj.input_json_deltas += 1
+                            message = await stream.get_final_message()
+                    except ValueError as exc:
+                        # Tool input JSON the SDK could not parse at all. The block never completed,
+                        # so there is no tool_use id to answer: re-issue the turn, bounded.
+                        gen.update(level="WARNING", status_message=f"unparseable tool input JSON: {exc}")
+                        traj.json_retries += 1
+                        if traj.json_retries > 2:
+                            traj.stop = "invalid_json"
+                            break
+                        continue
+                    except anthropic.APIError as exc:
+                        gen.update(level="ERROR", status_message=f"{type(exc).__name__}: {exc}")
+                        raise
+                    gen.update(
+                        # The served model, which differs from the requested one after a fallback.
+                        model=message.model,
+                        output=tracing.content_dump(message.content) if self.traced else None,
+                        usage_details=tracing.usage_details(message.usage),
+                        level="WARNING" if message.stop_reason in ("refusal", "max_tokens") else None,
+                        metadata={"stop_reason": message.stop_reason, "message_id": message.id},
+                    )
                 traj.turns += 1
                 traj.input_tokens += message.usage.input_tokens
                 traj.output_tokens += message.usage.output_tokens
