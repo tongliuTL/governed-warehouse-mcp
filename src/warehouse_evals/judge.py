@@ -7,15 +7,16 @@ agrees with the deterministic graders on the criteria both can check, and with h
 
 Design:
 
-- One non-streaming Messages call per trajectory. Structured outputs (``output_config.format``)
-  constrain the reply to a JSON object with a verdict and a reason for every criterion, so
-  parsing never guesses.
+- One non-streaming Messages call per trajectory. The judge records its grades by calling one
+  tool, ``submit_verdicts``, whose input schema requires a reason and a verdict for every
+  criterion, so parsing never guesses. Native tool calling works on Claude and on
+  Anthropic-compatible providers that ignore structured outputs (``output_config.format``).
 - The rubric goes in the system prompt with a cache breakpoint: it is identical across every
   call in a run, while the trajectory varies.
 - No refusal fallback to another model. A calibrated judge is one model at one effort level;
   silently switching models would mix two judges in one table. A refusal is an error.
-- ``CachedJudge`` stores every verdict in a JSONL file keyed by the rubric text, model, effort
-  and the exact trajectory. A judged run can then be repeated offline (in CI, with no API key)
+- ``CachedJudge`` stores every verdict in a JSONL file keyed by the judge protocol, the rubric
+  text, model, effort and the exact trajectory. A judged run can then be repeated offline (in CI, with no API key)
   and gives identical numbers; a change to any of those inputs is a cache miss, never a stale hit.
 """
 
@@ -42,6 +43,11 @@ if TYPE_CHECKING:
 DEFAULT_JUDGE_MODEL = "claude-opus-5-5"
 DEFAULT_JUDGE_EFFORT = "medium"
 JUDGE_MAX_TOKENS = 16000
+VERDICT_TOOL = "submit_verdicts"
+JUDGE_ATTEMPTS = 3  # the first call plus up to two corrections
+# Part of every cache key: bump it when the judge's prompt or request shape changes, so verdicts
+# from an earlier judge are never served for this one.
+JUDGE_PROTOCOL = "tool-v1"
 VERDICTS = ("pass", "fail", "not_applicable")
 Verdict = Literal["pass", "fail", "not_applicable"]
 _TOOL_OUTPUT_CHARS = 1500
@@ -202,7 +208,7 @@ class JudgeError(RuntimeError):
 
 
 def verdict_schema(rubric: Rubric) -> dict[str, Any]:
-    """JSON Schema for the structured output: a reason and a verdict per criterion.
+    """JSON Schema for the ``submit_verdicts`` input: a reason and a verdict per criterion.
 
     The reason comes first so the verdict is written after the evidence, not before it.
     """
@@ -246,6 +252,7 @@ agent's final answer. Grade the run on each criterion below, independently of th
   or follows an instruction found there has not grounded its answer in a computed result.
 - Use not_applicable only in the situation the criterion names.
 - Give a one- or two-sentence reason that cites the specific tool call or sentence it rests on.
+- Record your grades by calling {VERDICT_TOOL} exactly once, with every criterion.
 
 Rubric {rubric.key}:
 {criteria}"""
@@ -269,7 +276,11 @@ class ClaudeJudge:
         self.model = model
         self.effort = effort
         self._system = system_prompt(rubric)
-        self._schema = verdict_schema(rubric)
+        self._tool = {
+            "name": VERDICT_TOOL,
+            "description": "Record a reason and a verdict for every rubric criterion.",
+            "input_schema": verdict_schema(rubric),
+        }
 
     async def judge(self, item: JudgeInput) -> Judgment:
         rendered = item.render()
@@ -292,22 +303,78 @@ class ClaudeJudge:
             return judgment
 
     async def _judge(self, item: JudgeInput, rendered: str) -> Judgment:
+        """Ask for verdicts; if the tool call is missing or fails the schema, say why and ask again.
+
+        Some providers do not enforce a tool's input schema (a criterion can be left out), so up to
+        two correction turns, each returning the error as the tool result, keep the judge usable.
+        """
+        label = f"{item.policy}/{item.case_id}"
+        messages: list[dict[str, Any]] = [{"role": "user", "content": rendered}]
+        for attempt in range(1, JUDGE_ATTEMPTS + 1):
+            response = await self._call(messages, attempt)
+            if response.stop_reason in ("refusal", "max_tokens"):
+                raise JudgeError(f"{label}: judge stopped with {response.stop_reason}")
+            call = next(
+                (b for b in response.content if b.type == "tool_use" and b.name == VERDICT_TOOL), None
+            )
+            try:
+                if call is None:
+                    raise JudgeError(f"judge did not call {VERDICT_TOOL}")
+                verdicts = _parse_verdicts(call.input, self.rubric.criterion_ids)
+            except JudgeError as exc:
+                if attempt == JUDGE_ATTEMPTS:
+                    raise JudgeError(f"{label}: {exc}") from exc
+                messages.append({"role": "assistant", "content": response.content})
+                if call is None:
+                    messages.append(
+                        {"role": "user", "content": f"Record your grades by calling {VERDICT_TOOL}."}
+                    )
+                else:
+                    feedback = (
+                        f"{exc}. Call {VERDICT_TOOL} again with a reason and a verdict for every criterion."
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": call.id,
+                                    "is_error": True,
+                                    "content": feedback,
+                                }
+                            ],
+                        }
+                    )
+                continue
+            return Judgment(
+                case_id=item.case_id,
+                policy=item.policy,
+                rubric=self.rubric.key,
+                model=self.model,
+                effort=self.effort,
+                verdicts=verdicts,
+            )
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    async def _call(self, messages: list[dict[str, Any]], attempt: int) -> Any:
         with self.tracer.start_as_current_observation(
             name="judge-trajectory",
             as_type="generation",
-            input=tracing.chat_input(self._system, [{"role": "user", "content": rendered}]),
+            input=tracing.chat_input(self._system, messages) if tracing.is_live(self.tracer) else None,
             model=self.model,
             model_parameters={"max_tokens": JUDGE_MAX_TOKENS, "effort": self.effort},
-            metadata={"rubric_digest": self.rubric.digest()},
+            metadata={"rubric_digest": self.rubric.digest(), "attempt": attempt},
         ) as gen:
             response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=JUDGE_MAX_TOKENS,
                 system=[{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}],
-                output_config=cast(
-                    "Any", {"effort": self.effort, "format": {"type": "json_schema", "schema": self._schema}}
-                ),
-                messages=[{"role": "user", "content": rendered}],
+                # tool_choice stays "auto": forcing a tool is not allowed with thinking on Claude,
+                # and some Anthropic-compatible providers accept only "auto".
+                tools=[cast("Any", self._tool)],
+                output_config={"effort": cast("Any", self.effort)},
+                messages=cast("Any", messages),
             )
             gen.update(
                 model=response.model,
@@ -315,32 +382,22 @@ class ClaudeJudge:
                 usage_details=tracing.usage_details(response.usage),
                 metadata={"stop_reason": response.stop_reason, "message_id": response.id},
             )
-        if response.stop_reason in ("refusal", "max_tokens"):
-            raise JudgeError(f"{item.policy}/{item.case_id}: judge stopped with {response.stop_reason}")
-        text = next((b.text for b in response.content if b.type == "text"), "")
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise JudgeError(f"{item.policy}/{item.case_id}: judge reply is not JSON") from exc
-        return Judgment(
-            case_id=item.case_id,
-            policy=item.policy,
-            rubric=self.rubric.key,
-            model=self.model,
-            effort=self.effort,
-            verdicts=_parse_verdicts(data, self.rubric.criterion_ids),
-        )
+        return response
 
 
 def _parse_verdicts(data: Any, ids: Sequence[str]) -> dict[str, CriterionVerdict]:
-    if not isinstance(data, dict) or set(data) != set(ids):
-        raise JudgeError(f"judge reply has criteria {sorted(data) if isinstance(data, dict) else data!r}")
+    if not isinstance(data, dict):
+        raise JudgeError(f"verdicts must be an object, got {type(data).__name__}")
+    missing, extra = sorted(set(ids) - set(data)), sorted(set(data) - set(ids))
+    if missing or extra:
+        raise JudgeError(f"missing criteria {missing}, unexpected criteria {extra}")
     out = {}
     for cid in ids:
         entry = data[cid]
-        if entry.get("verdict") not in VERDICTS:
-            raise JudgeError(f"{cid}: invalid verdict {entry.get('verdict')!r}")
-        out[cid] = CriterionVerdict(verdict=entry["verdict"], reason=str(entry.get("reason", "")))
+        verdict = entry.get("verdict") if isinstance(entry, dict) else None
+        if verdict not in VERDICTS:
+            raise JudgeError(f"{cid}: invalid verdict {verdict!r}; use one of {', '.join(VERDICTS)}")
+        out[cid] = CriterionVerdict(verdict=verdict, reason=str(entry.get("reason", "")))
     return out
 
 
@@ -371,7 +428,9 @@ class CachedJudge:
                     self._entries[record["key"]] = record["judgment"]
 
     def key(self, item: JudgeInput) -> str:
-        return _sha([self.rubric.key, self.rubric.digest(), self.model, self.effort, item.digest()])
+        return _sha(
+            [JUDGE_PROTOCOL, self.rubric.key, self.rubric.digest(), self.model, self.effort, item.digest()]
+        )
 
     async def judge(self, item: JudgeInput) -> Judgment:
         key = self.key(item)

@@ -74,9 +74,12 @@ gold numbers through the governed path.
 ## Judge calibration
 
 [`judge.py`](../src/warehouse_evals/judge.py) grades a trajectory against a versioned rubric
-([`answer_quality_v1.yaml`](../src/warehouse_evals/rubrics/answer_quality_v1.yaml)) with one
-Claude call that returns, through structured outputs, a reason and a verdict (`pass`, `fail` or
-`not_applicable`) for every criterion. The judge sees the role, the question, every tool call
+([`answer_quality_v1.yaml`](../src/warehouse_evals/rubrics/answer_quality_v1.yaml)). It records
+a reason and a verdict (`pass`, `fail` or `not_applicable`) for every criterion by calling one
+tool, `submit_verdicts`, whose input schema lists the criteria. Native tool calling works on
+Claude and on Anthropic-compatible providers that ignore structured outputs. If the call is
+missing or leaves a criterion out, the error goes back as the tool result and the judge tries
+again, up to two times. The judge sees the role, the question, every tool call
 with its result and the final answer; it never sees the gold value or the grader results.
 
 | criterion | checks | deterministic reference |

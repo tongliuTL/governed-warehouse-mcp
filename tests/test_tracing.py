@@ -14,7 +14,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from tests.util import ReplyTransport, arun, message_reply
 from warehouse_evals import tracing
 from warehouse_evals.cases import load_agent_cases
-from warehouse_evals.judge import ClaudeJudge, JudgeInput, load_rubric
+from warehouse_evals.judge import VERDICT_TOOL, ClaudeJudge, JudgeInput, load_rubric
 from warehouse_evals.runner import CaseResult, EvalContext, offline_client, run_case, scripted_client
 from warehouse_evals.scripted import POLICIES
 
@@ -105,7 +105,7 @@ def test_judge_call_is_an_evaluator_wrapping_one_generation(live: Langfuse) -> N
     rubric = load_rubric()
     verdicts = {cid: {"reason": "tool call 1", "verdict": "pass"} for cid in rubric.criterion_ids}
     usage = {"input_tokens": 900, "output_tokens": 80, "cache_read_input_tokens": 800}
-    transport = ReplyTransport(message_reply(json.dumps(verdicts), usage=usage))
+    transport = ReplyTransport(message_reply(usage=usage, tool_use=(VERDICT_TOOL, verdicts)))
     item = JudgeInput("otd-2025", "reference", "analyst", "What was OTD?", "79.7%", ())
     arun(ClaudeJudge(offline_client(transport), rubric, tracer=live).judge(item))
     tracing.flush()

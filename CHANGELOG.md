@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 The first version; not yet released.
 
+### Changed
+
+- **The judge records verdicts through a `submit_verdicts` tool** instead of structured
+  outputs, so it also works on Anthropic-compatible providers such as MiniMax, and it asks again
+  (up to twice) when a criterion is missing. Cached verdicts from the earlier judge no longer match.
+
 ### Added
 
 - **Langfuse tracing for live runs.** `gwm-eval live` and `gwm-eval calibrate --live` trace

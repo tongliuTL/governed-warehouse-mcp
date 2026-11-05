@@ -363,7 +363,8 @@ precedence, and no other command reads the file.
 
 The agent sends some Claude-specific request fields (the server-side fallback beta, eager
 tool-input streaming). An Anthropic-compatible provider may ignore them; a live case passes on
-MiniMax-M3.1-Flash. The judge relies on structured outputs, so calibrate a judge on a new
+MiniMax-M3.1-Flash. The judge records verdicts through a tool call rather than structured outputs
+(which MiniMax ignores), and asks again if a criterion is missing. Calibrate a judge on a new
 provider before trusting it.
 
 ### Development credentials
