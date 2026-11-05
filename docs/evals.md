@@ -150,7 +150,7 @@ server, and model quality is a measurement to track.
 ## Live runs and pass^k
 
 ```bash
-export ANTHROPIC_API_KEY=...
+cp .env.example .env     # model provider key and model names; see the README's Configuration
 uv run gwm-eval live --trials 3 --record cassettes/ --stream
 ```
 
