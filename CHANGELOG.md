@@ -10,6 +10,16 @@ The first version; not yet released.
 
 ### Added
 
+- **Langfuse tracing for live runs.** `gwm-eval live` and `gwm-eval calibrate --live` trace
+  each agent run (generations with thinking and usage, tool calls, grader scores) and each
+  judge call to Langfuse when its keys are set. Warehouse PII is redacted before export.
+- **`.env` credentials and provider choice.** `gwm-eval live` and `calibrate --live` read a
+  gitignored `.env` (template: `.env.example`, set up for MiniMax's Anthropic-compatible API);
+  `GWM_MODEL` and `GWM_JUDGE_MODEL` set the default models.
+- **Calibrated LLM judge.** A versioned rubric (`answer_quality_v1`), a Claude judge with
+  structured per-criterion verdicts and an offline verdict cache, and `gwm-eval calibrate`,
+  which reports agreement, Cohen's kappa and confusion matrices against the validated graders
+  and against blind human labels.
 - **Governed MCP server.** It serves five tools (`search_models`, `describe_model`,
   `list_metrics`, `query_metric`, `run_sql`) and the `catalog://version` resource, over stdio,
   Streamable HTTP or in-process.

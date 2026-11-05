@@ -13,3 +13,8 @@ data/
 reports/
 *.duckdb
 *.duckdb.wal
+
+# local credentials (see .env.example)
+.env
+.env.*
+!.env.example
