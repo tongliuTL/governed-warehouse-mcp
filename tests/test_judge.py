@@ -338,6 +338,7 @@ def test_cli_calibrate_offline(
     cache = tmp_path / "judgments.jsonl"
     out = tmp_path / "reports"
     base = ["--db", str(db_path), "--out", str(out), "calibrate", "--judge-cache", str(cache)]
+    base += ["--model", DEFAULT_JUDGE_MODEL]  # independent of any GWM_JUDGE_MODEL in a local .env
     assert cli.main(base) == 1  # nothing cached yet, and offline: fails loudly
 
     oracle = _oracle(rubric, ctx, cases, items)

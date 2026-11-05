@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from warehouse_evals import cli as eval_cli
+from warehouse_evals import tracing
 from warehouse_mcp.catalog import Catalog, load_catalog
 from warehouse_mcp.policy import Principal
 from warehouse_mcp.server import GovernedWarehouse, ServerConfig
@@ -71,3 +73,12 @@ def partner() -> Principal:
 @pytest.fixture
 def support() -> Principal:
     return Principal.for_role("support")
+
+
+@pytest.fixture(autouse=True)
+def _no_local_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never read a developer's .env or exported Langfuse keys: no live calls, no traces."""
+    monkeypatch.setattr(eval_cli, "ENV_FILE", tmp_path / "absent.env")
+    for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(tracing._state, "live", None)

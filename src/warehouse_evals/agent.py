@@ -18,6 +18,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import anthropic
@@ -27,6 +28,7 @@ from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 from mcp import Client
 
+from warehouse_evals import tracing
 from warehouse_mcp.server import error_code
 
 DEFAULT_MODEL = "claude-opus-5-5"
@@ -79,6 +81,7 @@ class Trajectory:
     first_token_ms: int | None = None
     elapsed_ms: int = 0
     error: str | None = None
+    trace_id: str | None = None
 
 
 def _anthropic_tool(tool: Any) -> dict[str, Any]:
@@ -107,6 +110,7 @@ class WarehouseAgent:
         max_tokens: int = 64_000,
         on_text: Callable[[str], None] | None = None,
         system: str = SYSTEM_PROMPT,
+        trace: bool = False,
     ) -> None:
         self.client = client
         self.mcp = mcp
@@ -116,8 +120,31 @@ class WarehouseAgent:
         self.max_tokens = max_tokens
         self.on_text = on_text
         self.system = system
+        self.trace = trace  # only runs against the real API are traced
 
-    async def run(self, question: str) -> Trajectory:  # noqa: PLR0912, PLR0915 - one readable loop
+    async def run(self, question: str) -> Trajectory:
+        with tracing.client(self.trace).start_as_current_observation(
+            name="answer-question", as_type="agent", input=question
+        ) as span:
+            traj = await self._run(question)
+            traj.trace_id = span.trace_id if self.trace and tracing.enabled() else None
+            span.update(
+                output=traj.final_text,
+                level="ERROR" if traj.error else "WARNING" if traj.stop != "end_turn" else None,
+                status_message=traj.error or (None if traj.stop == "end_turn" else f"stopped: {traj.stop}"),
+                metadata={
+                    "stop": traj.stop,
+                    "turns": traj.turns,
+                    "tool_calls": len(traj.tool_calls),
+                    "invalid_inputs": traj.invalid_inputs,
+                    "json_retries": traj.json_retries,
+                    "first_token_ms": traj.first_token_ms,
+                },
+            )
+        return traj
+
+    async def _run(self, question: str) -> Trajectory:  # noqa: PLR0912, PLR0915 - one readable loop
+        lf = tracing.client(self.trace)
         tools = (await self.mcp.list_tools()).tools
         # Schemas are fixed for the run: check and compile each once, not on every tool call.
         validators: dict[str, Validator] = {}
@@ -144,9 +171,25 @@ class WarehouseAgent:
                     traj.stop = "max_turns"
                     break
                 raw_inputs: dict[int, list[str]] = {}
+                gen = lf.start_observation(
+                    name="call-model",
+                    as_type="generation",
+                    input=tracing.chat_input(self.system, messages),
+                    model=self.model,
+                    model_parameters={
+                        "max_tokens": self.max_tokens,
+                        "effort": self.effort,
+                        "thinking": "adaptive",
+                    },
+                    metadata={"turn": traj.turns, "tools": [t.name for t in tools]},
+                )
+                first_delta = False
                 try:
                     async with self.client.beta.messages.stream(messages=messages, **params) as stream:
                         async for event in stream:
+                            if event.type == "content_block_delta" and not first_delta:
+                                first_delta = True
+                                gen.update(completion_start_time=datetime.now(UTC))
                             if event.type == "content_block_delta" and event.delta.type == "input_json_delta":
                                 raw_inputs.setdefault(event.index, []).append(event.delta.partial_json)
                             elif event.type == "text":
@@ -158,14 +201,29 @@ class WarehouseAgent:
                             elif event.type == "input_json":
                                 traj.input_json_deltas += 1
                         message = await stream.get_final_message()
-                except ValueError:
+                except ValueError as exc:
                     # Tool input JSON the SDK could not parse at all. The block never completed,
                     # so there is no tool_use id to answer: re-issue the turn, bounded.
+                    gen.update(level="WARNING", status_message=f"unparseable tool input JSON: {exc}")
+                    gen.end()
                     traj.json_retries += 1
                     if traj.json_retries > 2:
                         traj.stop = "invalid_json"
                         break
                     continue
+                except anthropic.APIError as exc:
+                    gen.update(level="ERROR", status_message=f"{type(exc).__name__}: {exc}")
+                    gen.end()
+                    raise
+                gen.update(
+                    # The served model, which differs from the requested one after a fallback.
+                    model=message.model,
+                    output=tracing.content_dump(message.content),
+                    usage_details=tracing.usage_details(message.usage),
+                    level="WARNING" if message.stop_reason in ("refusal", "max_tokens") else None,
+                    metadata={"stop_reason": message.stop_reason, "message_id": message.id},
+                )
+                gen.end()
                 traj.turns += 1
                 traj.input_tokens += message.usage.input_tokens
                 traj.output_tokens += message.usage.output_tokens
@@ -210,6 +268,15 @@ class WarehouseAgent:
                             )
                     if problem is not None:
                         traj.invalid_inputs += 1
+                        lf.start_observation(
+                            name=block.name,
+                            as_type="tool",
+                            input=args if args is not None else raw,
+                            output=problem,
+                            level="ERROR",
+                            status_message="rejected before execution: input failed schema validation",
+                            metadata={"tool_use_id": block.id, "executed": False},
+                        ).end()
                         results.append(
                             {
                                 "type": "tool_result",
@@ -221,17 +288,25 @@ class WarehouseAgent:
                         continue
                     assert args is not None
                     t0 = time.perf_counter()
-                    result = await self.mcp.call_tool(block.name, args)
-                    text = _tool_text(result)
-                    traj.tool_calls.append(
-                        ToolCall(
+                    with lf.start_as_current_observation(
+                        name=block.name, as_type="tool", input=args
+                    ) as tspan:
+                        result = await self.mcp.call_tool(block.name, args)
+                        text = _tool_text(result)
+                        call = ToolCall(
                             block.name,
                             args,
                             bool(result.is_error),
                             text,
                             round((time.perf_counter() - t0) * 1000),
                         )
-                    )
+                        tspan.update(
+                            output=text,
+                            level="ERROR" if call.is_error else None,
+                            status_message=call.error_code,
+                            metadata={"tool_use_id": block.id, "error_code": call.error_code},
+                        )
+                    traj.tool_calls.append(call)
                     results.append(
                         {
                             "type": "tool_result",

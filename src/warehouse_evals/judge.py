@@ -31,7 +31,10 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import anthropic
 import yaml
+from langfuse import propagate_attributes
 from pydantic import BaseModel, ConfigDict
+
+from warehouse_evals import tracing
 
 if TYPE_CHECKING:
     from warehouse_evals.runner import CaseResult
@@ -257,8 +260,10 @@ class ClaudeJudge:
         *,
         model: str = DEFAULT_JUDGE_MODEL,
         effort: str = DEFAULT_JUDGE_EFFORT,
+        trace: bool = False,
     ) -> None:
         self.client = client
+        self.trace = trace  # only verdicts from the real API are traced
         self.rubric = rubric
         self.model = model
         self.effort = effort
@@ -266,15 +271,50 @@ class ClaudeJudge:
         self._schema = verdict_schema(rubric)
 
     async def judge(self, item: JudgeInput) -> Judgment:
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=16000,
-            system=[{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}],
-            output_config=cast(
-                "Any", {"effort": self.effort, "format": {"type": "json_schema", "schema": self._schema}}
+        lf = tracing.client(self.trace)
+        rendered = item.render()
+        with (
+            propagate_attributes(
+                trace_name="grade-trajectory",
+                tags=[f"rubric:{self.rubric.key}", "judge"],
+                metadata={"case_id": item.case_id, "policy": item.policy, "rubric": self.rubric.key},
             ),
-            messages=[{"role": "user", "content": item.render()}],
-        )
+            lf.start_as_current_observation(
+                name="grade-trajectory", as_type="evaluator", input=rendered
+            ) as span,
+        ):
+            try:
+                judgment = await self._judge(item, rendered)
+            except JudgeError as exc:
+                span.update(level="ERROR", status_message=str(exc))
+                raise
+            span.update(output={k: asdict(v) for k, v in judgment.verdicts.items()})
+            return judgment
+
+    async def _judge(self, item: JudgeInput, rendered: str) -> Judgment:
+        with tracing.client(self.trace).start_as_current_observation(
+            name="judge-trajectory",
+            as_type="generation",
+            input=tracing.chat_input(self._system, [{"role": "user", "content": rendered}]),
+            model=self.model,
+            model_parameters={"max_tokens": 16000, "effort": self.effort},
+            metadata={"rubric_digest": self.rubric.digest()},
+        ) as gen:
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=16000,
+                system=[{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}],
+                output_config=cast(
+                    "Any", {"effort": self.effort, "format": {"type": "json_schema", "schema": self._schema}}
+                ),
+                messages=[{"role": "user", "content": rendered}],
+            )
+            gen.update(
+                model=response.model,
+                output=tracing.content_dump(response.content),
+                usage_details=tracing.usage_details(response.usage),
+                metadata={"stop_reason": response.stop_reason, "message_id": response.id},
+            )
         if response.stop_reason in ("refusal", "max_tokens"):
             raise JudgeError(f"{item.policy}/{item.case_id}: judge stopped with {response.stop_reason}")
         text = next((b.text for b in response.content if b.type == "text"), "")
