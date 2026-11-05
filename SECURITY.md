@@ -25,4 +25,9 @@ control it gets around, and includes a failing test, is the easiest to act on.
   protection for that host. To expose it on a network, put it behind TLS and your usual gateway.
 - **What is out of scope.** Row-level security, inference through aggregation, and network-level
   denial of service. The threat model explains each.
+- **Live-run credentials.** Model and Langfuse keys belong in the git-ignored `.env`, never in
+  the repository. Tests never read it.
+- **Traces.** Live runs traced to Langfuse have every warehouse PII value replaced with
+  `[REDACTED_PII]` before export, whatever the caller's role. Treat trace data as internal anyway:
+  it holds questions, SQL and query results.
 - **The data.** All data in this repository is synthetic.

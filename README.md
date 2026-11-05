@@ -8,7 +8,9 @@ A governed [Model Context Protocol](https://modelcontextprotocol.io) server that
 answer questions from an analytical warehouse. Agents cannot write to the warehouse, read data
 their token does not allow, or see personal data they are not cleared for. The repository also
 has an eval harness for tool-calling agents. It runs the real Anthropic SDK and the real MCP
-server end to end, and it runs offline, so CI needs no API key.
+server end to end, and it runs offline, so CI needs no API key. Live runs work with Claude or
+any Anthropic-compatible API, can be traced to [Langfuse](https://langfuse.com), and can be
+graded by an LLM judge that is calibrated against the deterministic graders first.
 
 The warehouse is a synthetic cross-border freight dataset (shipments, carriers, lanes, border
 crossings, customs documents, invoices, quotes). It is generated deterministically from a seed,
@@ -26,7 +28,7 @@ all gates passed
 - [What an agent sees](#what-an-agent-sees)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
-- [Evals](#evals)
+- [Evals](#evals) · [tracing with Langfuse](#tracing-live-runs-with-langfuse)
 - [Configuration](#configuration)
 - [Extending the catalog](#extending-the-catalog)
 - [Development](#development)
@@ -45,7 +47,9 @@ answers correctly, is the hard part. This repository does both:
   and regenerated before it runs on a read-only, sandboxed connection. Every call is audited.
 - **The eval harness** measures an agent on that server. It checks whether the agent answers
   correctly, respects governance, and resists prompt injection planted in the data. The graders
-  are deterministic, and they are themselves tested against planted failures.
+  are deterministic, and they are themselves tested against planted failures. An LLM judge
+  covers what rules cannot check (is a refusal honest? is the answer clear?), and it is
+  calibrated against those graders and human labels before its verdicts count.
 
 ## What an agent sees
 
@@ -99,7 +103,7 @@ confirms what is there.
 ```mermaid
 flowchart LR
     subgraph Agent["Agent (warehouse_evals.agent)"]
-        LLM["Claude via Anthropic SDK<br/>streaming, adaptive thinking,<br/>eager tool-input streaming"]
+        LLM["Anthropic SDK: Claude or an<br/>Anthropic-compatible API<br/>streaming, adaptive thinking"]
         Loop["Tool loop<br/>strict JSON re-parse<br/>JSON Schema validation"]
         LLM <--> Loop
     end
@@ -121,6 +125,7 @@ flowchart LR
     DB[("DuckDB, read-only<br/>no external access,<br/>config locked, timeout")]
 
     Loop -- "MCP: stdio, Streamable HTTP<br/>or in-process" --> Auth
+    Loop -.->|"live runs only,<br/>PII redacted"| LF[("Langfuse traces")]
     Catalog --> Tools
     Catalog --> Sem
     Catalog --> Guard
@@ -223,12 +228,13 @@ token's scopes.
 
 ```bash
 uv run gwm-eval all --gate             # offline: what CI runs
-uv run gwm-eval live --trials 3 --record cassettes/ --stream   # real Claude API
+uv run gwm-eval live --trials 3 --record cassettes/ --stream   # a real model (see Configuration)
 uv run gwm-eval replay cassettes/      # replay recorded live runs offline
-uv run gwm-eval calibrate --live      # calibrate the LLM judge against graders and labels
+uv run gwm-eval calibrate --live       # calibrate the LLM judge against graders and labels
 ```
 
-The harness has three suites. [docs/evals.md](docs/evals.md) describes the method in detail.
+The harness has three suites and a judge calibration. [docs/evals.md](docs/evals.md) describes
+the method in detail.
 
 - **Agent cases** (17):
   - answer (10): questions the agent must answer correctly;
@@ -245,6 +251,13 @@ The harness has three suites. [docs/evals.md](docs/evals.md) describes the metho
 - **Retrieval.** Measures whether `search_models` ranks a correct model or metric in the top k,
   for questions phrased the way people ask. A dev set is used to tune the rankers; results are
   reported on a held-out set.
+- **Judge calibration.** An LLM judge grades each trajectory on a versioned rubric
+  ([`answer_quality_v1`](src/warehouse_evals/rubrics/answer_quality_v1.yaml): grounded answer,
+  respects access, no unsafe actions, honest refusal, clear and concise). `gwm-eval calibrate`
+  runs every planted-failure policy, judges each trajectory, and reports agreement, Cohen's
+  kappa and a confusion matrix per criterion, against the graders and against blind human
+  labels. Verdicts are cached by rubric text, model, effort and trajectory, so a calibrated run
+  repeats offline; `--min-kappa` turns it into a gate.
 
 ### How it runs offline
 
@@ -300,14 +313,9 @@ when its keys are set. Without them, or for scripted and replayed runs, nothing 
 those model turns are fixtures, and tracing them would record invented usage and cost.
 
 ```bash
-cp .env.example .env   # set up for MiniMax's Anthropic-compatible API; fill in the keys
-gwm-eval live --case otd-2025
+cp .env.example .env   # fill in the model provider and LANGFUSE_* keys (see Configuration)
+uv run gwm-eval live --case otd-2025
 ```
-
-`.env` is gitignored and read only by `gwm-eval live` and `gwm-eval calibrate --live`; variables
-already set in your shell take precedence. `GWM_MODEL` and `GWM_JUDGE_MODEL` set the default
-`--model` for `live` and `calibrate`; the template points the Anthropic SDK at
-`https://api.minimax.io/anthropic` with `MiniMax-M3.1-Flash`.
 
 | trace | observations | scores and attributes |
 |---|---|---|
@@ -321,7 +329,8 @@ run's role. Traces go to the `eval` environment unless `LANGFUSE_TRACING_ENVIRON
 
 ## Configuration
 
-`gwm serve` options:
+### Server (`gwm serve`)
+
 
 | option | default | meaning |
 |---|---|---|
@@ -338,6 +347,26 @@ Other limits live in `ServerConfig`:
 - a 10 s query timeout;
 - a per-principal token bucket of 60 calls, refilling at 1 per second;
 - SQL capped at 20,000 characters.
+
+### Live runs: model provider and credentials
+
+`gwm-eval live` and `gwm-eval calibrate --live` read credentials from a gitignored `.env`
+(start from [`.env.example`](.env.example)). Variables already set in your shell take
+precedence, and no other command reads the file.
+
+| variable | meaning |
+|---|---|
+| `ANTHROPIC_API_KEY` | key for the model provider |
+| `ANTHROPIC_BASE_URL` | unset for the Claude API; set for an Anthropic-compatible provider (the template uses `https://api.minimax.io/anthropic`) |
+| `GWM_MODEL`, `GWM_JUDGE_MODEL` | default `--model` for `live` and `calibrate` (default `claude-opus-5-5`; the template uses `MiniMax-M3.1-Flash`) |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` | turn on [tracing](#tracing-live-runs-with-langfuse); leave the keys empty to run without it |
+
+The agent sends some Claude-specific request fields (the server-side fallback beta, eager
+tool-input streaming). An Anthropic-compatible provider may ignore them; a live case passes on
+MiniMax-M3.1-Flash. The judge relies on structured outputs, so calibrate a judge on a new
+provider before trusting it.
+
+### Development credentials
 
 `gwm keys` and `gwm token` exist for local development. In production, point the verifier at
 your identity provider's public key and issue short-lived tokens there.
@@ -380,12 +409,13 @@ uv run pytest --cov
 
 CI runs four checks:
 - lint and strict type checks;
-- the test suite on Python 3.11, 3.12 and 3.13: 211 tests, with a coverage floor of 85%
+- the test suite on Python 3.11, 3.12 and 3.13: 234 tests, with a coverage floor of 85%
   (currently about 96%);
 - end-to-end tests that start the server as a subprocess over stdio and over HTTP;
 - the offline eval gate, run with an empty API key.
 
-Content fingerprints in the tests pin the synthetic data, so any change to the generator has to
+Tests never read `.env` or exported Langfuse keys, so they make no live calls and send no
+traces. Content fingerprints in the tests pin the synthetic data, so any change to the generator has to
 show up as a visible, deliberate test update. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Repository layout
@@ -405,8 +435,11 @@ src/warehouse_evals/      the eval harness
   sse.py  transport.py    offline transports: scripted, recording, replay
   cases/                  agent and retrieval cases (YAML)
   graders.py  scripted.py  validation.py  retrieval.py  runner.py  report.py  cli.py
+  judge.py  calibration.py  rubrics/   LLM judge, verdict cache, calibration against graders and labels
+  tracing.py              Langfuse tracing for live runs, with PII redaction
 tests/                    unit, integration and end-to-end (stdio and HTTP subprocess) tests
 docs/                     architecture, threat model, eval methodology, latest eval report
+.env.example              template for live-run credentials (copy to the gitignored .env)
 ```
 
 ## Provenance

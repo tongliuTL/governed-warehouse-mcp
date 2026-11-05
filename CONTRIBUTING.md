@@ -30,7 +30,8 @@ All three must pass. Type checking is `mypy --strict` over `src/`.
 - **The catalog and the warehouse move together.** `tests/test_catalog.py` checks every catalog
   column against the warehouse, checks every warehouse column against the catalog, and compiles
   every metric. Add a column to both sides at once.
-- **Keys and cassettes.** `.keys/` is git-ignored; never commit a private key. Cassettes store no
+- **Keys and cassettes.** `.keys/` and `.env` are git-ignored; never commit a private key or an
+  API key. Cassettes store no
   headers or API keys, but still review one before committing it.
 
 ## Adding things
@@ -51,7 +52,7 @@ All three must pass. Type checking is `mypy --strict` over `src/`.
 ## Live evals
 
 ```bash
-export ANTHROPIC_API_KEY=...
+cp .env.example .env     # model provider key, optional Langfuse keys; .env is git-ignored
 uv run gwm-eval live --trials 3 --record cassettes/
 ```
 
