@@ -293,6 +293,32 @@ Live model results are not committed yet because they need an API key. To add th
 `gwm-eval live --record cassettes/` and commit `cassettes/`. CI then replays the recordings and
 adds a "replayed live runs" section to the report.
 
+### Tracing live runs with Langfuse
+
+`gwm-eval live` and `gwm-eval calibrate --live` send traces to [Langfuse](https://langfuse.com)
+when its keys are set. Without them, or for scripted and replayed runs, nothing is traced:
+those model turns are fixtures, and tracing them would record invented usage and cost.
+
+```bash
+cp .env.example .env   # set up for MiniMax's Anthropic-compatible API; fill in the keys
+gwm-eval live --case otd-2025
+```
+
+`.env` is gitignored and read only by `gwm-eval live` and `gwm-eval calibrate --live`; variables
+already set in your shell take precedence. `GWM_MODEL` and `GWM_JUDGE_MODEL` set the default
+`--model` for `live` and `calibrate`; the template points the Anthropic SDK at
+`https://api.minimax.io/anthropic` with `MiniMax-M3.1-Flash`.
+
+| trace | observations | scores and attributes |
+|---|---|---|
+| `answer-question` (one per case and trial) | `agent` root (question in, answer out); one `call-model` generation per Messages call with thinking, served model and token usage including cache reads; one `tool` observation per tool call, a sibling of the generation that asked for it | a boolean score per grader (`grader.*`) and `passed`; user `eval-<role>`; tags `suite:`, `role:`, `mode:` |
+| `grade-trajectory` (one per judge cache miss) | `evaluator` root (trajectory in, verdicts out) wrapping one `judge-trajectory` generation | tags `judge`, `rubric:<id>@v<n>` |
+
+Every PII value in the warehouse is replaced with `[REDACTED_PII]` before export, whatever the
+run's role. Traces go to the `eval` environment unless `LANGFUSE_TRACING_ENVIRONMENT` is set;
+`LANGFUSE_TRACING_ENABLED=false` turns tracing off. The code is in
+`src/warehouse_evals/tracing.py`.
+
 ## Configuration
 
 `gwm serve` options:

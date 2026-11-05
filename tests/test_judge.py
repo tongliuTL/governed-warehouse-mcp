@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TypeVar
 
-import anyio
-import httpx2
 import pytest
 
+from tests.util import ReplyTransport, arun, message_reply
 from warehouse_evals import cli
 from warehouse_evals.calibration import (
     REFERENCE,
@@ -43,18 +41,6 @@ from warehouse_evals.judge import (
 from warehouse_evals.runner import EvalContext, offline_client
 
 T = TypeVar("T")
-
-
-def arun(coro: Coroutine[Any, Any, T]) -> T:
-    async def main() -> T:
-        return await coro
-
-    return anyio.run(main)
-
-
-@pytest.fixture(scope="module")
-def ctx(db_path: Path) -> EvalContext:
-    return EvalContext(db_path)
 
 
 @pytest.fixture(scope="module")
@@ -238,33 +224,10 @@ def test_lenient_judge_is_caught(items: list[Item]) -> None:
 # --- the Claude judge over an offline transport -------------------------------------------
 
 
-def _message(text: str, stop: str = "end_turn") -> dict[str, Any]:
-    return {
-        "id": "msg_offline",
-        "type": "message",
-        "role": "assistant",
-        "model": DEFAULT_JUDGE_MODEL,
-        "content": [{"type": "text", "text": text}],
-        "stop_reason": stop,
-        "stop_sequence": None,
-        "usage": {"input_tokens": 10, "output_tokens": 10},
-    }
-
-
-class _Recorder(httpx2.AsyncBaseTransport):
-    def __init__(self, reply: dict[str, Any]) -> None:
-        self.reply = reply
-        self.bodies: list[dict[str, Any]] = []
-
-    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
-        self.bodies.append(json.loads(await request.aread()))
-        return httpx2.Response(200, json=self.reply)
-
-
 def test_claude_judge_request_shape_and_parsing(rubric: Rubric, items: list[Item]) -> None:
     reply = {cid: {"reason": "cited tool call 2", "verdict": "pass"} for cid in rubric.criterion_ids}
     reply["respects_access"] = {"reason": "queried contact_email", "verdict": "fail"}
-    transport = _Recorder(_message(json.dumps(reply)))
+    transport = ReplyTransport(message_reply(json.dumps(reply)))
     judge = ClaudeJudge(offline_client(transport), rubric)
     item = items[0]
     judgment = arun(judge.judge(JudgeInput.from_result(item.result, item.case.question)))
@@ -283,7 +246,7 @@ def test_claude_judge_request_shape_and_parsing(rubric: Rubric, items: list[Item
     [("{}", "refusal"), ("not json", "end_turn"), ('{"grounded_answer": {}}', "end_turn")],
 )
 def test_claude_judge_rejects_bad_replies(rubric: Rubric, items: list[Item], text: str, stop: str) -> None:
-    judge = ClaudeJudge(offline_client(_Recorder(_message(text, stop))), rubric)
+    judge = ClaudeJudge(offline_client(ReplyTransport(message_reply(text, stop))), rubric)
     item = items[0]
     with pytest.raises(JudgeError):
         arun(judge.judge(JudgeInput.from_result(item.result, item.case.question)))
@@ -338,6 +301,7 @@ def test_cli_calibrate_offline(
     cache = tmp_path / "judgments.jsonl"
     out = tmp_path / "reports"
     base = ["--db", str(db_path), "--out", str(out), "calibrate", "--judge-cache", str(cache)]
+    base += ["--model", DEFAULT_JUDGE_MODEL]  # independent of any GWM_JUDGE_MODEL in a local .env
     assert cli.main(base) == 1  # nothing cached yet, and offline: fails loudly
 
     oracle = _oracle(rubric, ctx, cases, items)

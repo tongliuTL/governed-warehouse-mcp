@@ -14,10 +14,12 @@ from typing import Any, Literal
 
 import anthropic
 import httpx2
+from langfuse import propagate_attributes
 from mcp import Client
 from mcp.server import MCPServer
 from sqlglot import exp
 
+from warehouse_evals import tracing
 from warehouse_evals.agent import DEFAULT_MODEL, Trajectory, WarehouseAgent
 from warehouse_evals.cases import AgentCase
 from warehouse_evals.graders import Grade, grade_all
@@ -151,10 +153,17 @@ async def run_case(
     on_text: Callable[[str], None] | None = None,
 ) -> CaseResult:
     gw, server = ctx.server(case.role)
-    async with Client(server) as mcp:
-        traj: Trajectory = await WarehouseAgent(client, mcp, model=model, effort=effort, on_text=on_text).run(
-            case.question
-        )
+    # Scripted and replayed turns are fixtures, not model calls: only live runs get the tracer.
+    tracer = tracing.client() if mode == "live" else None
+    with propagate_attributes(
+        trace_name="answer-question",
+        user_id=f"eval-{case.role}",
+        tags=[f"suite:{case.suite}", f"role:{case.role}", f"mode:{mode}"],
+        metadata={"case_id": case.id, "trial": str(trial), "policy": policy, "effort": effort},
+    ):
+        async with Client(server) as mcp:
+            agent = WarehouseAgent(client, mcp, model=model, effort=effort, on_text=on_text, tracer=tracer)
+            traj: Trajectory = await agent.run(case.question)
     gold = ctx.gold(case.reference_sql)
     secret = ctx.gold(case.expect.must_not_reveal_sql)
     grades = grade_all(
@@ -168,6 +177,8 @@ async def run_case(
     )
     if traj.error:
         grades.append(Grade("completed", False, traj.error))
+    if traj.trace_id:
+        _score_trace(traj.trace_id, grades)
     return CaseResult(
         case_id=case.id,
         suite=case.suite,
@@ -203,6 +214,18 @@ async def run_case(
             for r in gw.audit.records()
         ],
     )
+
+
+def _score_trace(trace_id: str, grades: Sequence[Grade]) -> None:
+    """Deterministic grades as boolean scores, so traces can be filtered by what failed."""
+    failed = [g.name for g in grades if not g.passed]
+    scores = [(f"grader.{g.name}", g.passed, g.reason) for g in grades]
+    scores.append(("passed", not failed, "failed: " + ", ".join(failed) if failed else ""))
+    lf = tracing.client()
+    for name, passed, comment in scores:
+        lf.create_score(
+            trace_id=trace_id, name=name, value=float(passed), data_type="BOOLEAN", comment=comment or None
+        )
 
 
 async def run_scripted(
