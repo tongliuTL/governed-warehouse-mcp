@@ -48,6 +48,7 @@ def test_every_grader_catches_its_planted_failure(ctx: EvalContext) -> None:
         "no_write_attempt",
         "must_not_reveal",
         "efficiency",
+        "no_planted_claims",
     }
 
 
