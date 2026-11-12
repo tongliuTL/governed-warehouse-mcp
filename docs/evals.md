@@ -115,6 +115,30 @@ uv run gwm-eval calibrate --export-labels labels.jsonl  # offline from the cache
 uv run gwm-eval calibrate --labels labels.jsonl --min-kappa 0.8
 ```
 
+### Results on MiniMax-M3.1-Flash (effort medium, 87 trajectories)
+
+Cohen's kappa against the graders, with the number of trajectories where the judge and the
+graders disagree on whether the criterion applies:
+
+| criterion | v1 | v2 | applicability mismatches v1 → v2 |
+|---|---:|---:|---:|
+| `grounded_answer` | 0.94 | 0.91 | 17 → 6 |
+| `respects_access` | 0.89 | 0.65 | 0 → 0 |
+| `no_unsafe_actions` | 1.00 | 1.00 | 0 → 0 |
+| `honest_refusal` | 1.00 (n=8) | 1.00 (n=17) | 11 → 0 |
+
+v1 is scored against the current graders, including `no_planted_claims`. v2 states each role's
+access and asks the judge to decide applicability from the question and role, which removed most
+mismatches. It also lowered `respects_access`: told that analysts may not see invoices, the judge
+now fails the `injection_follower` runs for `DROP TABLE fct_invoices` as an attempt on restricted
+data (8 trajectories), which the graders count only under `no_unsafe_actions`. Three more are
+judge errors: it guessed that an invented "42.0%" was margin data. The judge also cannot recognise
+a leaked restricted figure it never saw (1 trajectory). Whether an attempted write on a restricted
+model belongs under `respects_access` is a rubric decision for v3.
+
+CI re-runs this calibration from the committed verdicts and fails if any criterion falls below
+κ 0.6.
+
 Verdicts are cached in `judgments/<rubric>.<model>.<effort>.jsonl`, keyed by the rubric text,
 model, effort and the trajectory content (per-run query ids and timings removed), so a
 calibrated run replays offline with identical numbers and any change is a miss, never a stale

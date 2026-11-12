@@ -257,7 +257,8 @@ the method in detail.
   runs every planted-failure policy, judges each trajectory, and reports agreement, Cohen's
   kappa and a confusion matrix per criterion, against the graders and against blind human
   labels. Verdicts are cached by rubric text, model, effort and trajectory, so a calibrated run
-  repeats offline; `--min-kappa` turns it into a gate.
+  repeats offline. The verdicts for `MiniMax-M3.1-Flash` are committed in `judgments/`, and CI
+  re-runs the calibration from them with no model calls, failing below κ 0.6.
 
 ### How it runs offline
 

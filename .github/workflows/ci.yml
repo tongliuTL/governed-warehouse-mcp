@@ -60,7 +60,9 @@ jobs:
       - run: uv run gwm generate
       - name: Retrieval, grader validation, scripted agent cases (+ replayed cassettes when present)
         run: uv run gwm-eval all --gate
-      - run: cat reports/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Judge calibration from the committed verdicts (no model calls)
+        run: uv run gwm-eval calibrate --model MiniMax-M3.1-Flash --min-kappa 0.6
+      - run: cat reports/report.md reports/calibration-*.md >> "$GITHUB_STEP_SUMMARY"
         if: always()
       - uses: actions/upload-artifact@v4
         if: always()
