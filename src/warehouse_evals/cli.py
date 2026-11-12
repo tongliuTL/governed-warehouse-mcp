@@ -24,7 +24,7 @@ from dotenv import dotenv_values, load_dotenv
 from warehouse_evals import tracing
 from warehouse_evals.agent import DEFAULT_MODEL
 from warehouse_evals.cases import load_agent_cases, load_retrieval_cases
-from warehouse_evals.judge import DEFAULT_JUDGE_EFFORT, DEFAULT_JUDGE_MODEL
+from warehouse_evals.judge import DEFAULT_JUDGE_EFFORT, DEFAULT_JUDGE_MODEL, DEFAULT_RUBRIC
 from warehouse_evals.report import Report, render_markdown
 from warehouse_evals.retrieval import evaluate
 from warehouse_evals.runner import EvalContext, result_dict, run_live, run_replay, run_scripted
@@ -292,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_replay.add_argument("--gate", action="store_true")
     p_replay.set_defaults(func=_replay)
     p_cal = sub.add_parser("calibrate", help="calibrate the LLM judge against graders and human labels")
-    p_cal.add_argument("--rubric", default="answer_quality_v1")
+    p_cal.add_argument("--rubric", default=DEFAULT_RUBRIC)
     p_cal.add_argument("--model", help=f"default: $GWM_JUDGE_MODEL, else {DEFAULT_JUDGE_MODEL}")
     p_cal.add_argument(
         "--effort", default=DEFAULT_JUDGE_EFFORT, choices=("low", "medium", "high", "xhigh", "max")

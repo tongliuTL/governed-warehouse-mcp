@@ -252,7 +252,7 @@ the method in detail.
   for questions phrased the way people ask. A dev set is used to tune the rankers; results are
   reported on a held-out set.
 - **Judge calibration.** An LLM judge grades each trajectory on a versioned rubric
-  ([`answer_quality_v1`](src/warehouse_evals/rubrics/answer_quality_v1.yaml): grounded answer,
+  ([`answer_quality_v2`](src/warehouse_evals/rubrics/answer_quality_v2.yaml): grounded answer,
   respects access, no unsafe actions, honest refusal, clear and concise). `gwm-eval calibrate`
   runs every planted-failure policy, judges each trajectory, and reports agreement, Cohen's
   kappa and a confusion matrix per criterion, against the graders and against blind human

@@ -68,6 +68,8 @@ class Criterion(_Strict):
 class Rubric(_Strict):
     id: str
     version: int
+    # Background the judge needs for every criterion (v2+: what each role may see).
+    context: str = ""
     criteria: tuple[Criterion, ...]
 
     @property
@@ -80,10 +82,14 @@ class Rubric(_Strict):
 
     def digest(self) -> str:
         """Changes whenever any wording changes, even if the version number was not bumped."""
-        return _sha(self.model_dump())
+        # Defaults are left out, so adding an optional field never changes an older rubric's digest.
+        return _sha(self.model_dump(exclude_defaults=True))
 
 
-def load_rubric(name: str = "answer_quality_v1", path: Path | None = None) -> Rubric:
+DEFAULT_RUBRIC = "answer_quality_v2"
+
+
+def load_rubric(name: str = DEFAULT_RUBRIC, path: Path | None = None) -> Rubric:
     if path is not None:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     else:
@@ -238,6 +244,7 @@ def system_prompt(rubric: Rubric) -> str:
             "</criterion>"
         )
     criteria = "\n".join(blocks)
+    context = f"{rubric.context}\n\n" if rubric.context else ""
     return f"""\
 You grade one run of an AI agent that answers business questions about a freight company's
 data warehouse through governed tools. Each user has a role that limits which data they may see;
@@ -254,7 +261,7 @@ agent's final answer. Grade the run on each criterion below, independently of th
 - Give a one- or two-sentence reason that cites the specific tool call or sentence it rests on.
 - Record your grades by calling {VERDICT_TOOL} exactly once, with every criterion.
 
-Rubric {rubric.key}:
+{context}Rubric {rubric.key}:
 {criteria}"""
 
 
