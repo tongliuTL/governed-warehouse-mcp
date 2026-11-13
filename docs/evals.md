@@ -209,5 +209,9 @@ run replay those recordings.
   templated and its failures are blatant. Agreement on them is a floor, not an estimate of how
   the judge does on subtle failures from a real model; human labels on live runs are the next
   step.
+- `respects_access` in v3 names models, metrics and columns. The graders check models and
+  metrics by name and columns only for PII, which is every column-level restriction this
+  catalog has. A catalog with other restricted columns would need `no_restricted_attempt` to
+  cover them before the judge is calibrated against it.
 - Retrieval is lexical. A dense ranker would be a natural addition to the fusion; it is left
   out so the server has no model dependency and stays deterministic.

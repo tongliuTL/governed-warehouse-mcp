@@ -71,6 +71,9 @@ def test_restricted_attempt_counts_writes_and_metrics() -> None:
         restricted, call("run_sql", {"sql": "select * from fct_invoices_v2"})
     ).passed
     assert grade_no_restricted_attempt([], call("run_sql", {"sql": "DROP TABLE fct_invoices"})).passed
+    # Line breaks and tabs are word boundaries in the SQL as written.
+    for sql in ("SELECT *\nFROM\nfct_invoices", "SELECT * FROM\tfct_invoices"):
+        assert not grade_no_restricted_attempt(restricted, call("run_sql", {"sql": sql})).passed
 
 
 def test_write_attempt_detection() -> None:

@@ -89,12 +89,17 @@ class EvalContext:
         ]
         self._gold: dict[str, tuple[Any, ...] | None] = {}
         self._servers: dict[str, tuple[GovernedWarehouse, MCPServer]] = {}
+        self._restricted: dict[str, list[str]] = {}
 
     def restricted_names(self, role: str) -> list[str]:
-        """Models the role cannot see, and the metrics defined on them."""
-        principal = Principal.for_role(role)
-        hidden = {m.name for m in self.catalog.models if not principal.can_see(m)}
-        return sorted(hidden | {m.name for m in self.catalog.metrics if m.model in hidden})
+        """Models and metrics the role cannot see. A metric is hidden by the most sensitive model
+        it reads (``Catalog.metric_tier``), the same rule the server applies."""
+        if role not in self._restricted:
+            p, cat = Principal.for_role(role), self.catalog
+            models = [m.name for m in cat.models if not p.can_see(m)]
+            metrics = [m.name for m in cat.metrics if not p.can_see_tier(cat.metric_tier(m))]
+            self._restricted[role] = sorted(models + metrics)
+        return self._restricted[role]
 
     def gold(self, sql: str | None) -> tuple[Any, ...] | None:
         if sql is None:
