@@ -173,17 +173,79 @@ top on both. Fusion's Recall@1 is lower than the best single ranker on each set,
 real cost; `search_models` returns several results, so Recall@3 is the number the agent
 experiences.
 
+### Real queries
+
+Both sets above were written by someone who could see the catalog, so they lean towards
+catalog words. The third set, **real**, holds queries the live agent wrote itself:
+
+```bash
+uv run gwm-eval harvest cassettes/ reports/report.json   # -> reports/real_queries.yaml
+# label: fill `relevant` for each row, or delete rows that are not real retrieval needs
+uv run gwm-eval harvest --promote reports/real_queries.yaml   # -> cases/retrieval_real.yaml
+```
+
+`harvest` reads recorded cassettes and live or replayed reports (scripted runs are skipped:
+their queries are authored), keeps each `search_models` query once, drops queries already in a
+retrieval set, and lists the candidates the server returns for that role today as a hint.
+`--promote` appends only rows with a label, refuses the whole file if a label names something
+not in the catalog, and skips queries already present. Labels are never guessed.
+
+When [`retrieval_real.yaml`](../src/warehouse_evals/cases/) exists, `gwm-eval all` reports it
+as the real set. It joins the Recall@3 gate and the regression baseline once it has 20
+queries; below that, one query moves Recall@3 by five points or more. No cassettes are committed
+yet, so the set does not exist yet.
+
 ## Gates
 
-`gwm-eval all --gate` exits non-zero when:
+`gwm-eval all --gate` exits non-zero when an absolute gate fails:
 
 - any scripted reference case fails;
 - any grader-validation verdict differs from the prediction;
-- RRF Recall@3 drops below 0.9 on the dev or held-out set;
-- any committed cassette no longer replays (a behaviour change since it was recorded).
+- RRF Recall@3 drops below 0.9 on the dev or held-out set (and the real set, from 20 queries);
+- any committed cassette no longer replays (a behaviour change since it was recorded);
+
+or when the **regression gate** fails against the committed
+[`evals/baseline.json`](../evals/baseline.json):
+
+- any agent case or grader-validation row that passed in the baseline fails now. This is a
+  100% gate with no tolerance: a single case is a regression;
+- any retrieval metric (Recall@1, @3, @5 and MRR, for every ranker, on every gated set) falls
+  more than 0.05 below its baseline value;
+- the baseline is missing (the gate fails closed).
+
+Improvements never fail the gate; they are printed as `baseline:` notes. Moving the baseline is
+deliberate: `gwm-eval baseline --update` rewrites the file (and refuses while an absolute gate
+fails), and the diff goes through review like code. `gwm-eval baseline` alone runs the
+comparison without writing reports.
 
 A recorded model's wrong answers are reported, not gated: the gate protects the harness and the
 server, and model quality is a measurement to track.
+
+## Telemetry and alerting
+
+Every `gwm-eval all`, `live` and `replay` run appends to an eval history in DuckDB
+(`reports/history.duckdb`, or `--history PATH`): one row per run (commit, ref, CI run URL,
+catalog version, seed, the gate failures), one per case result (label, mode, role, trial,
+pass, failed graders) and one per retrieval metric. That table answers what a badge cannot:
+when a case started failing, on which commit, and whether it has flipped before.
+
+```bash
+uv run gwm-eval history --last 10   # recent runs, and cases whose state changed since their last run
+```
+
+A case is compared only with earlier runs under the same label and trial, so a live failure is
+never read as a flip of the scripted case.
+
+In CI, the evals job restores the history from the last run on `main` (artifact
+`eval-history`, kept 90 days), appends this run, prints the history in the step summary and
+uploads it again, so the table grows with every run on `main`. Pull requests read `main`'s
+history but never write it.
+
+A failing gate on `main` must reach a person. The `eval-alert` job runs after the evals on every
+push to `main`. On failure it opens one issue labelled `eval-regression`, assigned to the owner
+in [`.github/CODEOWNERS`](../.github/CODEOWNERS) (`@tongliuTL`), or comments on the open one;
+when `main` is green again it closes it. It is the only job with `issues: write`, it runs only
+for pushes to `main` (never `pull_request_target`), and it checks out no code.
 
 ## Live runs and pass^k
 
