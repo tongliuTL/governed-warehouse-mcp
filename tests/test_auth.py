@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives import serialization
 
 from tests.util import run
 from warehouse_mcp import auth
+from warehouse_mcp.agents import AgentRegistry, load_agents
 from warehouse_mcp.policy import ROLE_SCOPES, Principal
 
 
@@ -127,3 +128,49 @@ def test_principal_tiers() -> None:
     assert Principal("x").max_tier is None
     assert not Principal("x").can_read_pii
     assert Principal.for_role("support").can_read_pii
+
+
+TWO_AGENTS = AgentRegistry.model_validate(
+    {
+        "agents": {
+            "local-dev": {"owner": "dev", "permitted_scopes": ["warehouse:public", "warehouse:internal"]},
+            "ops-assistant": {"owner": "operations", "permitted_scopes": ["warehouse:public"]},
+            "retired-bot": {"owner": "nobody", "permitted_scopes": ["warehouse:public"], "enabled": False},
+        }
+    }
+)
+
+
+def test_second_agent_is_one_registry_entry_and_scopes_are_intersected(keys: tuple[bytes, bytes]) -> None:
+    verifier = auth.JwtVerifier(keys[1], agents=TWO_AGENTS)
+    # The identity provider over-issues finance scopes; each agent keeps only what it is permitted.
+    finance = list(ROLE_SCOPES["finance"])
+    ops = verifier.principal(auth.issue_token(keys[0], "svc", finance, client_id="ops-assistant"))
+    assert ops.scopes == {"warehouse:public"} and ops.client_id == "ops-assistant"
+    dev = verifier.principal(auth.issue_token(keys[0], "svc", finance, client_id="local-dev"))
+    assert dev.scopes == {"warehouse:public", "warehouse:internal"}
+    access = run(verifier.verify_token, auth.issue_token(keys[0], "svc", finance, client_id="ops-assistant"))
+    assert access is not None and access.scopes == ["warehouse:public"]
+
+
+@pytest.mark.parametrize("client_id", ["retired-bot", "never-registered"])
+def test_unknown_or_disabled_agent_is_rejected(keys: tuple[bytes, bytes], client_id: str) -> None:
+    verifier = auth.JwtVerifier(keys[1], agents=TWO_AGENTS)
+    token = auth.issue_token(keys[0], "svc", ["warehouse:public"], client_id=client_id)
+    with pytest.raises(auth.AuthError, match="not enabled"):
+        verifier.principal(token)
+    assert run(verifier.verify_token, token) is None
+
+
+def test_token_without_client_id_is_rejected(keys: tuple[bytes, bytes], verifier: auth.JwtVerifier) -> None:
+    signed = auth.issue_token(keys[0], "svc", ["warehouse:public"])
+    claims = jwt.decode(signed, options={"verify_signature": False})
+    del claims["client_id"]
+    private = serialization.load_pem_private_key(keys[0], password=None)
+    token = jwt.encode(claims, private, algorithm="EdDSA")  # type: ignore[arg-type]
+    with pytest.raises(auth.AuthError, match="no client_id"):
+        verifier.principal(token)
+
+
+def test_packaged_registry_only_registers_local_dev() -> None:
+    assert set(load_agents().agents) == {"local-dev"}

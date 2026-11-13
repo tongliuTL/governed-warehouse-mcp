@@ -5,7 +5,13 @@ The connection is the second layer of defence behind :mod:`warehouse_mcp.sql_gua
 - the database file is opened ``read_only``, so no statement can write to it;
 - external access is disabled, so file, HTTP and extension functions cannot reach outside;
 - configuration is locked after start-up, so a query cannot turn those settings back on;
-- every query runs under a wall-clock timeout and a memory limit.
+- every query runs under a wall-clock timeout and a hard memory limit.
+
+DuckDB has no ``statement_timeout`` setting. The timeout is a timer that calls
+``cursor.interrupt()``, which the engine checks between vector chunks, so a query stops within a
+fraction of a second of the limit and the shared connection stays usable. Spilling to disk is
+off (``max_temp_directory_size = 0``): a query that outgrows the memory limit fails with an
+out-of-memory error instead of writing temporary files next to a read-only database.
 """
 
 from __future__ import annotations
@@ -66,6 +72,7 @@ class Warehouse:
                 "autoinstall_known_extensions": False,
                 "memory_limit": memory_limit,
                 "threads": 4,
+                "max_temp_directory_size": "0GB",
                 "lock_configuration": True,
             },
         )
