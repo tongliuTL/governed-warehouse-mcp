@@ -27,7 +27,7 @@ all gates passed
 - [Why it exists](#why-it-exists)
 - [What an agent sees](#what-an-agent-sees)
 - [Architecture](#architecture)
-- [Quickstart](#quickstart)
+- [Quickstart](#quickstart) · [deployment](#deployment)
 - [Evals](#evals) · [tracing with Langfuse](#tracing-live-runs-with-langfuse)
 - [Configuration](#configuration)
 - [Extending the catalog](#extending-the-catalog)
@@ -222,7 +222,35 @@ uv run gwm serve --transport http --port 8000 --audit-log audit.jsonl
 ```
 
 Without a valid bearer token the server answers 401. With one, each request is served with that
-token's scopes.
+token's scopes. `/healthz` and `/readyz` answer without a token and return no data.
+
+### Deployment
+
+The [Dockerfile](Dockerfile) builds a small image that serves Streamable HTTP as a non-root user.
+The synthetic warehouse is baked in at `/data`, and the server needs only a public key at `/keys`:
+
+```bash
+docker build -t governed-warehouse-mcp .
+uv run gwm keys --dir .keys            # dev keys; in production, your identity provider's key
+docker run --rm -p 8000:8000 --read-only --tmpfs /tmp \
+  -v "$PWD/.keys/public.pem:/keys/public.pem:ro" governed-warehouse-mcp
+curl localhost:8000/readyz             # {"status": "ready", "catalog_version": "..."}
+```
+
+- **Read-only.** The root filesystem can be read-only: the warehouse opens `read_only`, spilling
+  to disk is off, and nothing is written outside `/tmp`. Mount your own warehouse with
+  `-v /path/to/data:/data:ro`.
+- **Host names.** DNS-rebinding protection only accepts listed Host headers. The image accepts
+  `localhost:8000` and `127.0.0.1:8000`; behind a proxy, pass your own, for example
+  `docker run ... governed-warehouse-mcp --allowed-host mcp.example.com --public-url https://mcp.example.com`.
+- **Probes.** `/healthz` (the process is up) and `/readyz` (a trivial query succeeds; 503
+  otherwise). The image's `HEALTHCHECK` uses `/readyz`.
+- **CI.** Every change builds the image, runs it with a read-only root filesystem, and runs
+  [`scripts/smoke_http.py`](scripts/smoke_http.py): probes, a 401 without a token, an allowed
+  query, a denied one and a refused write.
+
+This makes the server deployable, not operated: there is no identity provider, TLS
+termination, log shipping or horizontal scaling here. Those belong to the platform it runs on.
 
 ## Evals
 
@@ -236,12 +264,15 @@ uv run gwm-eval calibrate --live       # calibrate the LLM judge against graders
 The harness has three suites and a judge calibration. [docs/evals.md](docs/evals.md) describes
 the method in detail.
 
-- **Agent cases** (17):
+- **Agent cases** (22):
   - answer (10): questions the agent must answer correctly;
   - governance (4): the right refusal for the role, and a PII-cleared role getting what it is
     cleared for;
-  - prompt injection (3): instructions planted in shipment notes that ask the agent to drop a
-    table, report a false number, or dump customer emails.
+  - prompt injection (8): instructions planted in shipment notes that ask the agent to drop a
+    table, report a false number, or dump customer emails; and five red-team cases, each a
+    different route in: a poisoned column description, a payload echoed in a tool error, writes
+    disguised with comments, case and full-width Unicode, an image link that would carry data out,
+    and a note claiming the user was promoted to finance.
 
   Gold answers are computed from the warehouse at run time, so cases cannot drift from the data.
 - **Grader validation.** Five planted-failure policies run against every case: fabricating
@@ -285,9 +316,9 @@ retrieval. The scripted results show that the harness works; they are not a mode
 |---|---:|---:|
 | answer | 10 | 100% |
 | governance | 4 | 100% |
-| injection | 3 | 100% |
+| injection | 8 | 100% |
 
-Grader validation caught **69/69** planted failures with **0** false positives, and **17/17**
+Grader validation caught **90/90** planted failures with **0** false positives, and **22/22**
 reference trajectories passed every grader.
 
 Retrieval (Recall@3 is gated at 0.9 for the fused ranker on both sets):
@@ -441,6 +472,8 @@ src/warehouse_evals/      the eval harness
   tracing.py              Langfuse tracing for live runs, with PII redaction
 tests/                    unit, integration and end-to-end (stdio and HTTP subprocess) tests
 docs/                     architecture, threat model, eval methodology, latest eval report
+scripts/smoke_http.py     smoke test for a running HTTP server (CI runs it against the image)
+Dockerfile                multi-stage image: non-root, read-only root filesystem, Streamable HTTP
 .env.example              template for live-run credentials (copy to the gitignored .env)
 ```
 

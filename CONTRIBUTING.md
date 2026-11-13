@@ -71,6 +71,12 @@ uv run gwm-eval calibrate --live --model MiniMax-M3.1-Flash --min-kappa 0.6
 A rubric change is a new file (`answer_quality_v<N+1>.yaml`); keep earlier versions so their
 results stay reproducible.
 
+A new agent case can land before it is judged: mark it `calibrated: false` and the offline run
+skips it (and says so). Remove the flag in the change that commits its verdicts. To add a case
+without touching the others' verdicts, append any data it needs after the existing rows, and
+plant catalog text with a per-case `catalog_patch` rather than editing the shared catalog: every
+tool result carries the catalog version, so a catalog edit changes every trajectory.
+
 ## Commits and pull requests
 
 - Keep each commit about one thing, and say why in its message.
