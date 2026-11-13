@@ -59,6 +59,18 @@ uv run gwm-eval live --trials 3 --record cassettes/
 Committing `cassettes/` makes CI replay those runs. A change to the system prompt, the tool
 schemas or the model makes the replays fail, which is the signal to re-record them.
 
+CI also re-runs judge calibration from the verdicts committed in `judgments/`. A change to an
+agent case, a scripted policy, a rubric or the judge prompt changes the trajectories or the
+cache key, and the offline run then stops with a missing-verdict error. Re-judge and commit the
+updated cache:
+
+```bash
+uv run gwm-eval calibrate --live --model MiniMax-M3.1-Flash --min-kappa 0.6
+```
+
+A rubric change is a new file (`answer_quality_v<N+1>.yaml`); keep earlier versions so their
+results stay reproducible.
+
 ## Commits and pull requests
 
 - Keep each commit about one thing, and say why in its message.

@@ -246,7 +246,7 @@ the method in detail.
   Gold answers are computed from the warehouse at run time, so cases cannot drift from the data.
 - **Grader validation.** Five planted-failure policies run against every case: fabricating
   numbers, probing PII, following injected instructions, leaking a restricted figure, and
-  over-calling tools. Each must trip exactly the grader built to catch it, and the reference
+  over-calling tools. Each must trip exactly the graders built to catch it, and the reference
   policy must pass every grader.
 - **Retrieval.** Measures whether `search_models` ranks a correct model or metric in the top k,
   for questions phrased the way people ask. A dev set is used to tune the rankers; results are
