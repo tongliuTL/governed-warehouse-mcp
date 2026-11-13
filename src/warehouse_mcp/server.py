@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from warehouse_mcp.audit import AuditLog, AuditRecord
 from warehouse_mcp.catalog import DIALECT, Catalog, Tier, load_catalog
+from warehouse_mcp.dense import DEFAULT_MODEL, DenseRanker, FastEmbedder, default_cache_dir
 from warehouse_mcp.discovery import Discovery
 from warehouse_mcp.policy import PolicyViolation, Principal, visible_model
 from warehouse_mcp.ratelimit import RateLimiter
@@ -139,6 +140,11 @@ class ServerConfig:
     query_timeout_s: float = 10.0
     rate_capacity: int = 60
     rate_refill_per_s: float = 1.0
+    # Optional dense ranker (needs the ``dense`` extra). Off by default: lexical search has no
+    # model dependency and is deterministic.
+    dense: bool = False
+    dense_model: str = DEFAULT_MODEL
+    dense_cache_dir: Path | None = None
 
 
 PrincipalResolver = Callable[[], Principal | None]
@@ -176,7 +182,11 @@ class GovernedWarehouse:
     def __post_init__(self) -> None:
         self.guard = SqlGuard(self.catalog, max_rows=self.config.max_rows)
         self.compiler = SemanticCompiler(self.catalog, max_rows=self.config.max_rows)
-        self.discovery = Discovery(self.catalog)
+        dense = None
+        if self.config.dense:
+            cache = self.config.dense_cache_dir or default_cache_dir()
+            dense = DenseRanker(FastEmbedder(self.config.dense_model, cache / "models"), cache_dir=cache)
+        self.discovery = Discovery(self.catalog, dense)
         self.limiter = RateLimiter(self.config.rate_capacity, self.config.rate_refill_per_s)
 
     def reset(self) -> None:
@@ -212,8 +222,12 @@ class GovernedWarehouse:
 
     # -- tool logic (sync; called in a worker thread) --------------------------------
 
-    def search(self, principal: Principal, query: str, limit: int) -> SearchResult:
-        hits = self.discovery.search(query, principal, k=max(1, min(limit, 20)))
+    def search(
+        self, principal: Principal, query: str, limit: int, record: AuditRecord | None = None
+    ) -> SearchResult:
+        hits, used = self.discovery.search_explained(query, principal, k=max(1, min(limit, 20)))
+        if record is not None:
+            record.ranker = used  # "rrf (dense failover)" marks a query served without dense
         return SearchResult(
             catalog_version=self.catalog.version,
             hits=[
@@ -354,7 +368,7 @@ class GovernedWarehouse:
                 "search_models",
                 {"query": query, "limit": limit},
                 resolver,
-                lambda p, r: self.search(p, query, limit),
+                lambda p, r: self.search(p, query, limit, r),
             )
 
         @mcp.tool()

@@ -298,9 +298,13 @@ Retrieval (Recall@3 is gated at 0.9 for the fused ranker on both sets):
 | identifier BM25 | 84.4% | 100% | 0.917 | 62.5% | 91.7% | 0.767 |
 | description BM25 | 62.5% | 93.8% | 0.760 | 87.5% | 100% | 0.931 |
 | **RRF fusion** | 65.6% | 96.9% | 0.820 | 83.3% | 100% | 0.903 |
+| dense (bge-small, optional) | 71.9% | 93.8% | 0.829 | 58.3% | 75.0% | 0.704 |
+| RRF + dense (optional) | 84.4% | 100% | 0.917 | 83.3% | 100% | 0.910 |
 
 Each single ranker wins one set and loses the other. Fusion is the only one that holds up on
-both, so the server uses it. The full report is in [docs/eval-report.md](docs/eval-report.md),
+both, so the server uses it. An optional dense ranker joins the fusion as a third list
+(`--dense`, see [Configuration](#configuration)); it lifts the dev set but adds nothing beyond
+noise on the held-out set, so it stays off by default. The full report is in [docs/eval-report.md](docs/eval-report.md),
 and every CI run uploads a fresh one.
 
 Live model results are not committed yet because they need an API key. To add them, run
@@ -342,6 +346,16 @@ run's role. Traces go to the `eval` environment unless `LANGFUSE_TRACING_ENVIRON
 | `--issuer`, `--audience` | dev values | required `iss` and `aud` claims |
 | `--max-rows` | `200` | row cap per query; `query_metric` limits and `run_sql` results above it are refused or truncated |
 | `--audit-log` | none | append one JSON line per tool call (allowed, denied or failed) |
+| `--dense` | off (`GWM_DENSE=1` turns it on) | fuse a local embedding model into `search_models` as a third RRF list; needs `uv sync --extra dense` |
+
+**Dense retrieval (optional).** `--dense` embeds the catalog and each query with
+`BAAI/bge-small-en-v1.5` through `fastembed` (ONNX, CPU, no PyTorch), on the machine: no catalog
+text or question is sent anywhere. The model (about 64 MB) downloads on first use into
+`~/.cache/governed-warehouse-mcp/dense/models`. Entry vectors are cached there per catalog
+version and embedding model, and a cache written by another model is refused rather than mixed
+in. Query vectors are kept in a 1,000-entry LRU cache. If the model is missing or fails, the
+query is served by the two lexical lists, a warning is logged, and the audit record's `ranker`
+says `rrf (dense failover)`.
 
 Other limits live in `ServerConfig`:
 - 60,000 characters per result;

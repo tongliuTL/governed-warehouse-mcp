@@ -26,13 +26,15 @@ from warehouse_evals.agent import DEFAULT_MODEL
 from warehouse_evals.cases import load_agent_cases, load_retrieval_cases
 from warehouse_evals.judge import DEFAULT_JUDGE_EFFORT, DEFAULT_JUDGE_MODEL, DEFAULT_RUBRIC
 from warehouse_evals.report import Report, render_markdown
-from warehouse_evals.retrieval import evaluate
+from warehouse_evals.retrieval import GATE_RECALL_AT_3, dense_verdict, evaluate
 from warehouse_evals.runner import EvalContext, result_dict, run_live, run_replay, run_scripted
 from warehouse_evals.validation import validate_graders
+from warehouse_mcp.dense import DEFAULT_MODEL as DEFAULT_DENSE_MODEL
+from warehouse_mcp.dense import DenseRanker, FastEmbedder, default_cache_dir
 from warehouse_mcp.synthetic import DEFAULT_SEED, build_warehouse
 
 HELDOUT = Path(__file__).parent / "cases" / "retrieval_heldout.yaml"
-GATES = {"reference_pass_rate": 1.0, "grader_validation": 1.0, "retrieval_recall_at_3": 0.9}
+GATES = {"reference_pass_rate": 1.0, "grader_validation": 1.0, "retrieval_recall_at_3": GATE_RECALL_AT_3}
 
 
 def _context(args: argparse.Namespace) -> EvalContext:
@@ -58,6 +60,8 @@ def _write(report: Report, out: Path, sizes: dict[str, int]) -> None:
         ],
         "retrieval": {k: [asdict(s) for s in v] for k, v in report.retrieval.items()},
     }
+    if report.dense_verdict:
+        payload["dense_verdict"] = report.dense_verdict
     (out / "report.json").write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
     (out / "report.md").write_text(render_markdown(report, sizes), encoding="utf-8")
     print(f"wrote {out / 'report.md'} and {out / 'report.json'}", file=sys.stderr)
@@ -72,7 +76,23 @@ def _meta(ctx: EvalContext, note: str) -> dict[str, Any]:
     }
 
 
+def _dense_ranker(args: argparse.Namespace) -> DenseRanker:
+    """The dense ranker as the server builds it; document vectors are cached per catalog."""
+    cache = default_cache_dir()
+    return DenseRanker(
+        FastEmbedder(args.dense_model or DEFAULT_DENSE_MODEL, cache / "models"), cache_dir=cache
+    )
+
+
 async def _all(args: argparse.Namespace) -> int:
+    dense = None
+    if args.dense:
+        dense = _dense_ranker(args)
+        try:
+            dense.embedder.embed_query("warm up")  # fail now, not as a failover per query
+        except Exception as err:
+            print(f"--dense: the dense ranker cannot run: {err}", file=sys.stderr)
+            return 2
     ctx = _context(args)
     cases = load_agent_cases()
     note = (
@@ -86,7 +106,13 @@ async def _all(args: argparse.Namespace) -> int:
         report.agent[f"replayed live runs ({args.cassettes})"] = await run_replay(ctx, cases, args.cassettes)
     report.validation = await validate_graders(ctx, cases)
     dev, heldout = load_retrieval_cases(), load_retrieval_cases(HELDOUT)
-    report.retrieval = {"dev set": evaluate(ctx.catalog, dev), "held-out set": evaluate(ctx.catalog, heldout)}
+    report.retrieval = {
+        "dev set": evaluate(ctx.catalog, dev, dense),
+        "held-out set": evaluate(ctx.catalog, heldout, dense),
+    }
+    report.dense_verdict = dense_verdict(report.retrieval)
+    if report.dense_verdict:
+        print(f"dense retrieval: {report.dense_verdict}", file=sys.stderr)
     sizes = {"dev set": len(dev), "held-out set": len(heldout)}
     _write(report, args.out, sizes)
     ctx.close()
@@ -278,6 +304,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_all = sub.add_parser("all", help="offline suites with gates")
     p_all.add_argument("--cassettes", type=Path, default=Path("cassettes"))
     p_all.add_argument("--gate", action="store_true", help="exit 1 when a gate fails")
+    p_all.add_argument(
+        "--dense", action="store_true", help="also measure the dense ranker (needs the 'dense' extra)"
+    )
+    p_all.add_argument("--dense-model", default=None, help="embedding model for --dense")
     p_all.set_defaults(func=_all)
     p_live = sub.add_parser("live", help="run against the Claude API")
     p_live.add_argument("--model", help=f"default: $GWM_MODEL, else {DEFAULT_MODEL}")

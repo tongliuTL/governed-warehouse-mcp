@@ -173,6 +173,38 @@ top on both. Fusion's Recall@1 is lower than the best single ranker on each set,
 real cost; `search_models` returns several results, so Recall@3 is the number the agent
 experiences.
 
+### Dense ranker (optional)
+
+`gwm-eval all --dense` (needs `uv sync --extra dense`) adds two rankers to the ablation: `dense`,
+cosine similarity over `BAAI/bge-small-en-v1.5` embeddings of each entry's name and description
+text, and `rrf+dense`, the two lexical lists plus the dense top 20, fused with RRF. Nothing was
+tuned for it: default model, no query rewriting, the same k=60.
+
+| ranker | dev R@1 | dev R@3 | dev MRR | held-out R@1 | held-out R@3 | held-out MRR |
+|---|---:|---:|---:|---:|---:|---:|
+| rrf (default) | 65.6% | 96.9% | 0.820 | 83.3% | 100% | 0.903 |
+| dense | 71.9% | 93.8% | 0.829 | 58.3% | 75.0% | 0.704 |
+| rrf+dense | 84.4% | 100% | 0.917 | 83.3% | 100% | 0.910 |
+
+The rule for turning it on, applied by `retrieval.dense_verdict`: no regression on the gate
+(`rrf+dense` Recall@3 ≥ 0.9 on both sets) and a measured gain on the held-out set over `rrf`,
+meaning higher Recall@3 or an MRR gain of at least 0.02 (about one query of 24 moving from
+second to first place). The result is **keep it off**:
+
+- On dev, dense fixes RRF's weak first place: Recall@1 goes from 65.6% to 84.4% and the one
+  Recall@3 miss ("straight through processing rate") is fixed.
+- On held-out, the set that was not tuned against, RRF is already at 100% Recall@3, so there is
+  no headroom there, and MRR moves by +0.007: one query moving up one place, within noise.
+- Dense alone is the weakest ranker on held-out (75% Recall@3). It misses literal questions such
+  as "Which customers have not paid yet?" and "Distance in kilometers between Monterrey and
+  Dallas", where lexical matching on words in the descriptions is exactly right.
+
+The gain on dev is real but does not carry to the held-out set, and turning dense on costs a
+64 MB model, a dependency, and results that are no longer bit-for-bit identical across CPUs. The trigger to revisit is
+a larger catalog or column-level search, where paraphrase misses grow and the held-out set has
+headroom. Latency on a laptop CPU: about 2 ms for an uncached query embedding, 0.2 ms cached,
+and 0.2 s to load the model with entry vectors read from the disk cache.
+
 ## Gates
 
 `gwm-eval all --gate` exits non-zero when:
@@ -213,5 +245,6 @@ run replay those recordings.
   metrics by name and columns only for PII, which is every column-level restriction this
   catalog has. A catalog with other restricted columns would need `no_restricted_attempt` to
   cover them before the judge is calibrated against it.
-- Retrieval is lexical. A dense ranker would be a natural addition to the fusion; it is left
-  out so the server has no model dependency and stays deterministic.
+- Retrieval is lexical by default. The optional dense ranker is measured above and kept off: the
+  held-out set is already at 100% Recall@3 for RRF, so it cannot show a gain; a larger,
+  harder held-out set is what would justify turning it on.

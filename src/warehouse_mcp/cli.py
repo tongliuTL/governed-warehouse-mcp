@@ -64,7 +64,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     verifier = auth.JwtVerifier(
         (args.keys / "public.pem").read_bytes(), issuer=args.issuer, audience=args.audience
     )
-    gw = open_warehouse(args.db, audit_path=args.audit_log, config=ServerConfig(max_rows=args.max_rows))
+    gw = open_warehouse(
+        args.db, audit_path=args.audit_log, config=ServerConfig(max_rows=args.max_rows, dense=args.dense)
+    )
     if args.transport == "stdio":
         # stdio has no per-request auth, so the token is verified once at start-up.
         token = os.environ.get("GWM_TOKEN")
@@ -134,6 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--port", type=int, default=8000)
             p.add_argument("--max-rows", type=int, default=200)
             p.add_argument("--audit-log", type=Path, default=None, help="append audit records as JSONL")
+            p.add_argument(
+                "--dense",
+                action="store_true",
+                default=os.environ.get("GWM_DENSE", "").lower() in ("1", "true", "yes"),
+                help="fuse a local dense ranker into search_models (needs the 'dense' extra; env GWM_DENSE=1)",
+            )
             p.set_defaults(func=_cmd_serve)
     return parser
 

@@ -32,6 +32,11 @@ dependencies = [
 gwm = "warehouse_mcp.cli:main"
 gwm-eval = "warehouse_evals.cli:main"
 
+[project.optional-dependencies]
+dense = [
+    "fastembed>=0.7,<1",
+]
+
 [dependency-groups]
 dev = [
   "pytest>=8",
@@ -74,7 +79,7 @@ packages = ["warehouse_mcp", "warehouse_evals"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["duckdb.*", "sqlglot.*", "jsonschema.*"]
+module = ["duckdb.*", "sqlglot.*", "jsonschema.*", "fastembed.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

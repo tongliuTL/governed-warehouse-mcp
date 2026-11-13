@@ -69,3 +69,26 @@ jobs:
         with:
           name: eval-report
           path: reports/
+
+  dense:
+    name: Dense retrieval (report only)
+    runs-on: ubuntu-latest
+    # Measures the optional dense ranker; never blocks a merge. The default (lexical) path is
+    # gated in the evals job.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked --extra dense
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/governed-warehouse-mcp/dense/models
+          key: dense-model-BAAI-bge-small-en-v1.5
+      - run: uv run gwm generate
+      - run: uv run gwm-eval --out reports-dense all --dense
+      - run: uv run pytest -q tests/test_dense.py
+      - run: sed -n '/### Retrieval/,$p' reports-dense/report.md >> "$GITHUB_STEP_SUMMARY"
+        if: always()

@@ -7,13 +7,17 @@ Two lexical rankers are fused with Reciprocal Rank Fusion (RRF, k=60):
   ``border_crossing`` and ``mart_border_crossing_dwell``;
 - a description ranker: BM25 over descriptions, grain and column descriptions.
 
-A naive substring baseline is kept for the retrieval eval's ablation. Dense embeddings are a
-natural next ranker to fuse in; they are left out so the server has no model dependency and
-results are deterministic.
+A naive substring baseline is kept for the retrieval eval's ablation.
+
+An optional third list, a dense ranker over a local embedding model (``dense.py``), joins the
+fusion when a ``DenseRanker`` is passed in (``rrf+dense``). It is off by default, so the server
+has no model dependency and results are deterministic. If the dense ranker fails for any reason,
+the query is served by the two lexical lists, a warning is logged and a failover is counted.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import Counter
@@ -22,9 +26,13 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from warehouse_mcp.catalog import Catalog, Tier
+from warehouse_mcp.dense import DenseRanker
 from warehouse_mcp.policy import Principal
 
+log = logging.getLogger(__name__)
+
 RRF_K = 60
+DENSE_CANDIDATES = 20  # the dense list joins the fusion with its top entries only
 _STOPWORDS = frozenset(
     [
         "a",
@@ -161,12 +169,15 @@ class _Index:
         self.description = BM25([tokenize(e.description_text) for e in self.entries])
 
 
-Ranker = Literal["substring", "identifier", "description", "rrf"]
+Ranker = Literal["substring", "identifier", "description", "rrf", "dense", "rrf+dense"]
+LEXICAL_FALLBACK = "rrf (dense failover)"
 
 
 class Discovery:
-    def __init__(self, catalog: Catalog) -> None:
+    def __init__(self, catalog: Catalog, dense: DenseRanker | None = None) -> None:
         self.catalog = catalog
+        self.dense = dense
+        self.default_ranker: Ranker = "rrf+dense" if dense is not None else "rrf"
         entries: list[Entry] = []
         for model in catalog.models:
             entries.append(
@@ -199,26 +210,53 @@ class Discovery:
             return [True] * len(self._index.entries)
         return [principal.can_see_tier(e.tier) for e in self._index.entries]
 
+    def _dense_ranked(self, query: str) -> list[tuple[int, float]] | None:
+        """The dense list, or None when there is no dense ranker or it failed (a failover)."""
+        if self.dense is None:
+            return None
+        entries = self._index.entries
+        try:
+            scores = self.dense.scores(
+                query,
+                self.catalog.version,
+                [f"{e.kind}:{e.name}" for e in entries],
+                [_dense_text(e) for e in entries],
+            )
+        except Exception as err:  # any failure: serve the lexical result instead
+            self.dense.stats.failovers += 1
+            log.warning("dense ranker failed, serving lexical results: %s", err)
+            return None
+        return self._order(scores)[:DENSE_CANDIDATES]
+
     def rank(self, query: str, ranker: Ranker = "rrf") -> list[tuple[int, float]]:
         """Indices into the entry list with scores, best first, before access filtering."""
+        return self.rank_explained(query, ranker)[0]
+
+    def rank_explained(self, query: str, ranker: Ranker = "rrf") -> tuple[list[tuple[int, float]], str]:
+        """``rank`` plus the ranker that actually served the query, which differs from the one
+        asked for when the dense ranker failed over to the lexical lists."""
         tokens = tokenize(query)
         index = self._index
         if ranker == "substring":
             words = [w for w in query.lower().split() if w not in _STOPWORDS]
             raw = [float(sum(w in e.identifier_text.lower() for w in words)) for e in index.entries]
-            return self._order(raw)
+            return self._order(raw), ranker
         if ranker == "identifier":
-            return self._order(index.identifier.scores(tokens))
+            return self._order(index.identifier.scores(tokens)), ranker
         if ranker == "description":
-            return self._order(index.description.scores(tokens))
-        fused: dict[int, float] = {}
-        for ranked in (
-            self._order(index.identifier.scores(tokens)),
-            self._order(index.description.scores(tokens)),
-        ):
-            for position, (i, _) in enumerate(ranked):
-                fused[i] = fused.get(i, 0.0) + 1.0 / (RRF_K + position + 1)
-        return sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
+            return self._order(index.description.scores(tokens)), ranker
+        lists = [self._order(index.identifier.scores(tokens)), self._order(index.description.scores(tokens))]
+        used: str = "rrf"
+        if ranker in ("dense", "rrf+dense"):
+            dense = self._dense_ranked(query)
+            if dense is None:
+                used = LEXICAL_FALLBACK
+            elif ranker == "dense":
+                return dense, ranker
+            else:
+                lists.append(dense)
+                used = ranker
+        return fuse(lists), used
 
     @staticmethod
     def _order(scores: list[float]) -> list[tuple[int, float]]:
@@ -230,12 +268,25 @@ class Discovery:
         query: str,
         principal: Principal | None = None,
         k: int = 5,
-        ranker: Ranker = "rrf",
+        ranker: Ranker | None = None,
         kind: Callable[[Entry], bool] | None = None,
     ) -> list[Hit]:
+        return self.search_explained(query, principal, k, ranker, kind)[0]
+
+    def search_explained(
+        self,
+        query: str,
+        principal: Principal | None = None,
+        k: int = 5,
+        ranker: Ranker | None = None,
+        kind: Callable[[Entry], bool] | None = None,
+    ) -> tuple[list[Hit], str]:
+        """``search`` plus the ranker that served it. Access filtering runs after ranking and
+        before truncation to k, whatever the ranker: a hidden entry never takes a slot."""
         visible = self._visible(principal)
         hits: list[Hit] = []
-        for i, score in self.rank(query, ranker):
+        ranked, used = self.rank_explained(query, ranker or self.default_ranker)
+        for i, score in ranked:
             entry = self._index.entries[i]
             if not visible[i] or (kind is not None and not kind(entry)):
                 continue
@@ -244,4 +295,18 @@ class Discovery:
             )
             if len(hits) == k:
                 break
-        return hits
+        return hits, used
+
+
+def fuse(lists: Sequence[Sequence[tuple[int, float]]]) -> list[tuple[int, float]]:
+    """Reciprocal Rank Fusion: each list adds 1 / (k + rank), one-based, k = 60."""
+    fused: dict[int, float] = {}
+    for ranked in lists:
+        for position, (i, _) in enumerate(ranked):
+            fused[i] = fused.get(i, 0.0) + 1.0 / (RRF_K + position + 1)
+    return sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def _dense_text(entry: Entry) -> str:
+    """What the dense ranker embeds: the name in words, then the description text."""
+    return f"{entry.name.replace('_', ' ')}: {entry.description_text}"
