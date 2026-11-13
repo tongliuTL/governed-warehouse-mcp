@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The answer grader fails, instead of crashing, when the reference query returns no value**
+  (a stale warehouse made it `NULL` and aborted a live run in `float(None)`). It also no longer
+  passes a case unchecked when the reference query returns no rows.
+
 ## [0.2.0] - 2026-11-13
 
 Addresses the known boundaries of 0.1.0: agent separation, injection coverage, eval
