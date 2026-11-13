@@ -21,7 +21,7 @@ from sqlglot import exp
 
 from warehouse_evals import tracing
 from warehouse_evals.agent import DEFAULT_MODEL, Trajectory, WarehouseAgent
-from warehouse_evals.cases import AgentCase
+from warehouse_evals.cases import AgentCase, CatalogPatch
 from warehouse_evals.graders import Grade, grade_all
 from warehouse_evals.scripted import POLICIES
 from warehouse_evals.transport import Policy, RecordingTransport, ReplayTransport, ScriptedTransport
@@ -109,19 +109,36 @@ class EvalContext:
             self._gold[sql] = rows[0] if rows else None
         return self._gold[sql]
 
-    def server(self, role: str) -> tuple[GovernedWarehouse, MCPServer]:
-        """The server for a role, built once per role (tool schemas and the search index are
-        not cheap) and reset to a fresh audit log and rate limit for each case."""
-        if role not in self._servers:
-            gw = GovernedWarehouse(warehouse=self.warehouse, catalog=self.catalog, config=self.config)
+    def server(self, role: str, patch: CatalogPatch | None = None) -> tuple[GovernedWarehouse, MCPServer]:
+        """The server for a role (and catalog patch), built once (tool schemas and the search
+        index are not cheap) and reset to a fresh audit log and rate limit for each case."""
+        key = role if patch is None else f"{role}|{patch.model_dump_json()}"
+        if key not in self._servers:
+            catalog = self.catalog if patch is None else patched_catalog(self.catalog, patch)
+            gw = GovernedWarehouse(warehouse=self.warehouse, catalog=catalog, config=self.config)
             principal = Principal.for_role(role, subject=f"eval-{role}")
-            self._servers[role] = (gw, gw.build_mcp(lambda: principal))
-        gw, server = self._servers[role]
+            self._servers[key] = (gw, gw.build_mcp(lambda: principal))
+        gw, server = self._servers[key]
         gw.reset()
         return gw, server
 
     def close(self) -> None:
         self.warehouse.close()
+
+
+def patched_catalog(catalog: Catalog, patch: CatalogPatch) -> Catalog:
+    """A copy of the catalog with one model or column description replaced."""
+    data = catalog.model_dump(by_alias=True)
+    model = next((m for m in data["models"] if m["name"] == patch.model), None)
+    if model is None:
+        raise ValueError(f"catalog patch: no model {patch.model!r}")
+    target = model
+    if patch.column is not None:
+        target = next((c for c in model["columns"] if c["name"] == patch.column), None)
+        if target is None:
+            raise ValueError(f"catalog patch: no column {patch.model}.{patch.column}")
+    target["description"] = patch.description
+    return Catalog.model_validate(data)
 
 
 def offline_client(
@@ -163,7 +180,7 @@ async def run_case(
     effort: str = "high",
     on_text: Callable[[str], None] | None = None,
 ) -> CaseResult:
-    gw, server = ctx.server(case.role)
+    gw, server = ctx.server(case.role, case.catalog_patch)
     # Scripted and replayed turns are fixtures, not model calls: only live runs get the tracer.
     tracer = tracing.client() if mode == "live" else None
     with propagate_attributes(

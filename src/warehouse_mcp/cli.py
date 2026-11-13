@@ -83,7 +83,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             return 2
         gw.build_mcp(lambda: principal, log_level="INFO").run("stdio")
         return 0
-    base_url = f"http://{args.host}:{args.port}"
+    base_url = (args.public_url or f"http://{args.host}:{args.port}").rstrip("/")
     mcp = gw.build_mcp(
         principal_from_request,
         token_verifier=verifier,
@@ -95,12 +95,16 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         ),
         log_level="INFO",
     )
+    gw.add_health_routes(mcp)
+    # DNS-rebinding protection checks the Host header. Behind a container port mapping or a
+    # proxy the header is the public name, not the bind address, so deployments list it.
+    allowed = [f"{args.host}:{args.port}", args.host, *(args.allowed_host or [])]
     mcp.run(
         "streamable-http",
         host=args.host,
         port=args.port,
         transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True, allowed_hosts=[f"{args.host}:{args.port}", args.host]
+            enable_dns_rebinding_protection=True, allowed_hosts=allowed
         ),
     )
     return 0
@@ -143,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument(
                 "--agents", type=Path, default=None, help="agent registry YAML (default: local-dev only)"
             )
+            p.add_argument(
+                "--allowed-host",
+                action="append",
+                help="extra Host header to accept on HTTP, e.g. localhost:8000; repeatable",
+            )
+            p.add_argument("--public-url", help="the server's external base URL, for OAuth metadata")
             p.set_defaults(func=_cmd_serve)
     return parser
 

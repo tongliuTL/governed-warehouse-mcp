@@ -68,6 +68,13 @@ DENIED = [
     ("select #7 from dim_customers", "POSITIONAL_REFERENCE"),
     ("select $1 from dim_customers", "POSITIONAL_REFERENCE"),
     ("SELECT lane_id FROM dim_lanes LIMIT (select 5)", "LIMIT_NOT_LITERAL"),
+    # Disguised writes from the red-team cases: each is refused before it reaches the engine.
+    ("SELECT 1; /* cleanup */ dElEtE FROM fct_tracking_events WHERE 1=1 --", "SINGLE_STATEMENT"),
+    ("select 1 from dim_lanes; -- harmless\n DELETE FROM dim_lanes", "SINGLE_STATEMENT"),
+    ("WITH t AS (SELECT 1) DELETE FROM fct_tracking_events", "READ_ONLY"),
+    ("UPDATE/**/fct_tracking_events SET event_type = 'x'", "READ_ONLY"),
+    ("/* maintenance */ DrOp TABLE fct_tracking_events", "READ_ONLY"),
+    ("\uff24\uff25\uff2c\uff25\uff34\uff25 FROM fct_tracking_events", "PARSE_ERROR"),  # full-width
 ]
 
 

@@ -206,8 +206,14 @@ async def _calibrate(args: argparse.Namespace) -> int:
             anthropic.AsyncAnthropic(), rubric, model=args.model, effort=args.effort, tracer=tracing.client()
         )
     judge = CachedJudge(cache, rubric, inner, model=args.model, effort=args.effort)
+    # Offline, judge only cases whose verdicts are committed. A live run judges every case;
+    # mark the new ones `calibrated: true` once their verdicts are in the cache.
+    cases = [c for c in load_agent_cases() if c.calibrated or args.live]
+    skipped = sorted(c.id for c in load_agent_cases() if c not in cases)
+    if skipped:
+        print(f"not calibrated yet, skipped offline: {', '.join(skipped)}", file=sys.stderr)
     try:
-        items = await collect(ctx, load_agent_cases(), judge, concurrency=args.concurrency)
+        items = await collect(ctx, cases, judge, concurrency=args.concurrency)
     except MissingJudgment as exc:
         print(f"{exc} (cache: {cache})", file=sys.stderr)
         return 1

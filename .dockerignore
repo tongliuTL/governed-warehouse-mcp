@@ -1,0 +1,9 @@
+# Only the build inputs: pyproject.toml, uv.lock, README.md, LICENSE and src/.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+**/__pycache__
+**/*.pyc
