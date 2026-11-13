@@ -7,6 +7,12 @@ Two lexical rankers are fused with Reciprocal Rank Fusion (RRF, k=60):
   ``border_crossing`` and ``mart_border_crossing_dwell``;
 - a description ranker: BM25 over descriptions, grain and column descriptions.
 
+Access is enforced by construction: there is one index per visibility tier, built only from the
+entries that tier may see, and a caller searches the index for its highest tier. Filtering
+after ranking would hide restricted entries but still let them shape IDF, length
+normalisation and RRF ranks, so a caller could infer from scores that a restricted entry
+matching its query exists.
+
 A naive substring baseline is kept for the retrieval eval's ablation. Dense embeddings are a
 natural next ranker to fuse in; they are left out so the server has no model dependency and
 results are deterministic.
@@ -192,33 +198,46 @@ class Discovery:
                     description_text=metric.description,
                 )
             )
-        self._index = _Index(entries)
+        self.entries = entries
+        # One index per visibility tier, each built only from the entries that tier may see.
+        # BM25 statistics (IDF, average length) and the ranks RRF fuses then never depend on an
+        # entry the caller cannot see, so neither scores nor order can hint that one exists.
+        self._tiers = {tier: _Index([e for e in entries if e.tier <= tier]) for tier in Tier}
 
-    def _visible(self, principal: Principal | None) -> list[bool]:
+    def _index_for(self, principal: Principal | None) -> _Index | None:
+        """The index this caller searches; ``None`` (unfiltered, for offline evals) gets the
+        full catalog, a principal with no data scope gets nothing."""
         if principal is None:
-            return [True] * len(self._index.entries)
-        return [principal.can_see_tier(e.tier) for e in self._index.entries]
+            return self._tiers[max(Tier)]
+        tier = principal.max_tier
+        return None if tier is None else self._tiers[tier]
 
-    def rank(self, query: str, ranker: Ranker = "rrf") -> list[tuple[int, float]]:
-        """Indices into the entry list with scores, best first, before access filtering."""
+    def rank(
+        self, query: str, ranker: Ranker = "rrf", principal: Principal | None = None
+    ) -> list[tuple[Entry, float]]:
+        """Entries with scores, best first, from the index the principal may search."""
+        index = self._index_for(principal)
+        if index is None:
+            return []
         tokens = tokenize(query)
-        index = self._index
         if ranker == "substring":
             words = [w for w in query.lower().split() if w not in _STOPWORDS]
             raw = [float(sum(w in e.identifier_text.lower() for w in words)) for e in index.entries]
-            return self._order(raw)
-        if ranker == "identifier":
-            return self._order(index.identifier.scores(tokens))
-        if ranker == "description":
-            return self._order(index.description.scores(tokens))
-        fused: dict[int, float] = {}
-        for ranked in (
-            self._order(index.identifier.scores(tokens)),
-            self._order(index.description.scores(tokens)),
-        ):
-            for position, (i, _) in enumerate(ranked):
-                fused[i] = fused.get(i, 0.0) + 1.0 / (RRF_K + position + 1)
-        return sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
+            ranked = self._order(raw)
+        elif ranker == "identifier":
+            ranked = self._order(index.identifier.scores(tokens))
+        elif ranker == "description":
+            ranked = self._order(index.description.scores(tokens))
+        else:
+            fused: dict[int, float] = {}
+            for single in (
+                self._order(index.identifier.scores(tokens)),
+                self._order(index.description.scores(tokens)),
+            ):
+                for position, (i, _) in enumerate(single):
+                    fused[i] = fused.get(i, 0.0) + 1.0 / (RRF_K + position + 1)
+            ranked = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
+        return [(index.entries[i], score) for i, score in ranked]
 
     @staticmethod
     def _order(scores: list[float]) -> list[tuple[int, float]]:
@@ -233,11 +252,9 @@ class Discovery:
         ranker: Ranker = "rrf",
         kind: Callable[[Entry], bool] | None = None,
     ) -> list[Hit]:
-        visible = self._visible(principal)
         hits: list[Hit] = []
-        for i, score in self.rank(query, ranker):
-            entry = self._index.entries[i]
-            if not visible[i] or (kind is not None and not kind(entry)):
+        for entry, score in self.rank(query, ranker, principal):
+            if kind is not None and not kind(entry):
                 continue
             hits.append(
                 Hit(kind=entry.kind, name=entry.name, description=entry.description, score=round(score, 4))

@@ -307,6 +307,26 @@ def test_claude_judge_corrects_an_incomplete_tool_call_once(rubric: Rubric, item
     assert "clear_and_concise" in feedback["content"]
 
 
+def test_claude_judge_answers_every_tool_call_in_a_correction(rubric: Rubric, items: list[Item]) -> None:
+    # MiniMax rejects a turn unless each tool_use gets its own tool_result (error 2013).
+    full = {cid: {"reason": "tool call 1", "verdict": "pass"} for cid in rubric.criterion_ids}
+    two_calls = message_reply(tool_use=("some_other_tool", {}), stop="tool_use")
+    verdict = message_reply(tool_use=(VERDICT_TOOL, {"grounded_answer": {}}), stop="tool_use")
+    two_calls["content"] += verdict["content"]
+    for i, block in enumerate(b for b in two_calls["content"] if b["type"] == "tool_use"):
+        block["id"] = f"toolu_{i}"
+    transport = ReplyTransport(two_calls, message_reply(tool_use=(VERDICT_TOOL, full), stop="tool_use"))
+    item = items[0]
+    arun(
+        ClaudeJudge(offline_client(transport), rubric).judge(
+            JudgeInput.from_result(item.result, item.case.question)
+        )
+    )
+    results = transport.bodies[1]["messages"][-1]["content"]
+    assert [r["tool_use_id"] for r in results] == ["toolu_0", "toolu_1"]
+    assert all(r["type"] == "tool_result" and r["is_error"] for r in results)
+
+
 def test_claude_judge_gives_up_after_one_correction(rubric: Rubric, items: list[Item]) -> None:
     transport = ReplyTransport(message_reply("I think it passes."))  # never calls the tool
     item = items[0]

@@ -160,7 +160,10 @@ Defence in depth, from the outside in:
 
 1. **Authentication.** Tokens are Ed25519-signed JWTs. The algorithm is pinned, and `exp`,
    `iat`, `sub`, `iss` and `aud` are required. Over HTTP the MCP SDK's auth middleware verifies
-   every request; over stdio the token is verified once at start-up.
+   every request; over stdio the token is verified once at start-up. The token's `client_id`
+   names the agent, and its scopes are cut to what that agent is permitted in the
+   [agent registry](src/warehouse_mcp/agents.yaml). A missing, unknown or disabled agent is
+   rejected, and onboarding another agent is one registry entry.
 2. **Semantic layer.** `query_metric` compiles a metric request into a sqlglot AST from the
    catalog. User values only ever become quoted literals, and identifiers are always quoted.
 3. **SQL guard.** `run_sql` SQL, and compiled metric SQL again, must pass these checks:
@@ -373,6 +376,7 @@ run's role. Traces go to the `eval` environment unless `LANGFUSE_TRACING_ENVIRON
 | `--issuer`, `--audience` | dev values | required `iss` and `aud` claims |
 | `--max-rows` | `200` | row cap per query; `query_metric` limits and `run_sql` results above it are refused or truncated |
 | `--audit-log` | none | append one JSON line per tool call (allowed, denied or failed) |
+| `--agents` | packaged `agents.yaml` | agent registry: each `client_id`'s permitted scopes, owner and whether it is enabled. The packaged one registers only `local-dev` |
 
 Other limits live in `ServerConfig`:
 - 60,000 characters per result;
@@ -401,8 +405,9 @@ provider before trusting it.
 
 ### Development credentials
 
-`gwm keys` and `gwm token` exist for local development. In production, point the verifier at
-your identity provider's public key and issue short-lived tokens there.
+`gwm keys` and `gwm token` exist for local development; `gwm token --client-id` picks the agent
+(default `local-dev`). In production, point the verifier at your identity provider's public key,
+issue short-lived tokens there, and pass `--agents` with your own registry, without `local-dev`.
 
 ## Extending the catalog
 
