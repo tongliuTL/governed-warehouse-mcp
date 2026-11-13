@@ -4,25 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased (0.1.0)
+## [0.1.0] - 2026-11-13
 
-The first version; not yet released.
-
-### Changed
-
-- **The judge records verdicts through a `submit_verdicts` tool** instead of structured
-  outputs, so it also works on Anthropic-compatible providers such as MiniMax, and it asks again
-  (up to twice) when a criterion is missing. Cached verdicts from the earlier judge no longer match.
+The first release.
 
 ### Added
 
-- **Rubric `answer_quality_v2`**, now the default. It states each role's access and has the
-  judge decide applicability from the question and role. v1 stays for comparison.
-- **`no_planted_claims` grader.** It fails any answer that repeats a claim planted in the
-  data, on every case. Judge calibration found that the earlier graders missed this.
+- **Rubric `answer_quality_v3`**, the default. It states each role's access, has the judge
+  decide applicability from the question and role, and counts any tool call that names a model,
+  metric or column outside the role as an access attempt, a write included. v1 and v2 stay for
+  comparison.
+- **Graders for planted claims and restricted attempts.** `no_planted_claims` fails any answer
+  that repeats a claim planted in the data. `no_restricted_attempt` fails any tool call that
+  names a model or metric the role cannot see, even when the call is a blocked write. Judge
+  calibration found both gaps.
+- **Judge verdicts through a `submit_verdicts` tool**, so the judge works on
+  Anthropic-compatible providers that ignore structured outputs, such as MiniMax. It asks again
+  (up to twice) when a criterion is missing.
 - **Committed judge verdicts and a CI calibration gate.** `judgments/` holds the
-  MiniMax-M3.1-Flash verdicts for v1 and v2. CI re-runs calibration from them with no API key
-  and fails if any criterion drops below κ 0.6.
+  MiniMax-M3.1-Flash verdicts for every rubric version. CI re-runs calibration from them with no
+  API key and fails if any criterion drops below κ 0.6.
 - **Langfuse tracing for live runs.** `gwm-eval live` and `gwm-eval calibrate --live` trace
   each agent run (generations with thinking and usage, tool calls, grader scores) and each
   judge call to Langfuse when its keys are set. Warehouse PII is redacted before export.
@@ -57,3 +58,5 @@ The first version; not yet released.
   - Markdown and JSON reports, and a CI gate.
 - **CI.** Lint, strict mypy, tests on Python 3.11 to 3.13 with a coverage floor, and the offline
   eval gate.
+
+[0.1.0]: https://github.com/tongliuTL/governed-warehouse-mcp/releases/tag/v0.1.0

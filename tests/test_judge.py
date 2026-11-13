@@ -365,9 +365,9 @@ def test_cli_calibrate_offline(
     arun(collect(ctx, cases, filler))
     labels = tmp_path / "labels.jsonl"
     assert cli.main([*base, "--export-labels", str(labels), "--min-kappa", "0.9"]) == 0
-    report = (out / "calibration-answer_quality-v2.md").read_text(encoding="utf-8")
+    report = (out / "calibration-answer_quality-v3.md").read_text(encoding="utf-8")
     assert "Judge vs deterministic graders" in report and "| `respects_access` |" in report
-    payload = json.loads((out / "calibration-answer_quality-v2.json").read_text(encoding="utf-8"))
+    payload = json.loads((out / "calibration-answer_quality-v3.json").read_text(encoding="utf-8"))
     assert all(row["kappa"] == 1.0 for row in payload["tables"]["deterministic graders"])
     assert labels.exists()
     assert cli.main([*base, "--labels", str(labels)]) == 0
