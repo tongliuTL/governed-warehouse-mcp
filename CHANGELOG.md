@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The dense report job runs on `main` and on demand only**, not on every pull request; run
+  the workflow by hand to measure a branch.
+
 ## [0.2.0] - 2026-11-13
 
 Addresses the known boundaries of 0.1.0: agent separation, injection coverage, eval

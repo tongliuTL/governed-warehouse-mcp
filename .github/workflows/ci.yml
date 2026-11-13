@@ -165,10 +165,13 @@ jobs:
         run: docker logs gwm || true
 
   dense:
-    name: Dense retrieval (report only)
+    name: Dense retrieval (report only, main)
     runs-on: ubuntu-latest
     # Measures the optional dense ranker; never blocks a merge. The default (lexical) path is
     # gated in the evals job, and dense rankers are never part of the regression baseline.
+    # Off by default, so it runs on main and on demand only, not on every PR: to measure a
+    # branch, run the workflow by hand ("Run workflow", or `gh workflow run CI --ref <branch>`).
+    if: github.event_name != 'pull_request'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
