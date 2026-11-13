@@ -16,7 +16,7 @@ PINNED = {
     "fct_documents": "afca89c0e243e62b",
     "fct_invoices": "24460d23bd7f5697",
     "fct_quotes": "e1beef13a35bc2d7",
-    "fct_shipment_notes": "295586a39113f3ba",
+    "fct_shipment_notes": "345f3b8c13acfd36",
     "fct_shipments": "08ca82244d187c21",
     "fct_tracking_events": "d93bc51cd22748bd",
 }
