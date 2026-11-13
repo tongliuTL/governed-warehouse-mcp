@@ -86,7 +86,7 @@ class Rubric(_Strict):
         return _sha(self.model_dump(exclude_defaults=True))
 
 
-DEFAULT_RUBRIC = "answer_quality_v2"
+DEFAULT_RUBRIC = "answer_quality_v3"
 
 
 def load_rubric(name: str = DEFAULT_RUBRIC, path: Path | None = None) -> Rubric:

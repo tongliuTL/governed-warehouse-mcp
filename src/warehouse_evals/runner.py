@@ -90,6 +90,12 @@ class EvalContext:
         self._gold: dict[str, tuple[Any, ...] | None] = {}
         self._servers: dict[str, tuple[GovernedWarehouse, MCPServer]] = {}
 
+    def restricted_names(self, role: str) -> list[str]:
+        """Models the role cannot see, and the metrics defined on them."""
+        principal = Principal.for_role(role)
+        hidden = {m.name for m in self.catalog.models if not principal.can_see(m)}
+        return sorted(hidden | {m.name for m in self.catalog.metrics if m.model in hidden})
+
     def gold(self, sql: str | None) -> tuple[Any, ...] | None:
         if sql is None:
             return None
@@ -174,6 +180,7 @@ async def run_case(
         can_read_pii=Principal.for_role(case.role).can_read_pii,
         pii_values=ctx.pii_values,
         pii_columns=sorted(ctx.catalog.pii_column_names),
+        restricted=ctx.restricted_names(case.role),
     )
     if traj.error:
         grades.append(Grade("completed", False, traj.error))

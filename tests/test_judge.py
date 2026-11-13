@@ -117,7 +117,7 @@ def _oracle(rubric: Rubric, ctx: EvalContext, cases: list[AgentCase], items: lis
 
 
 def test_rubric_loads_and_every_mapped_criterion_exists(rubric: Rubric) -> None:
-    assert rubric.key == "answer_quality@v2"
+    assert rubric.key == "answer_quality@v3"
     assert set(REFERENCE) < set(rubric.criterion_ids)
     assert "clear_and_concise" in rubric.criterion_ids  # human-only criterion
 
@@ -128,10 +128,11 @@ def test_v1_digest_is_pinned() -> None:
 
 
 def test_every_rubric_version_loads_and_context_reaches_the_prompt() -> None:
-    v1, v2 = load_rubric("answer_quality_v1"), load_rubric("answer_quality_v2")
-    assert v1.criterion_ids == v2.criterion_ids
+    v1, v2, v3 = (load_rubric(f"answer_quality_v{n}") for n in (1, 2, 3))
+    assert v1.criterion_ids == v2.criterion_ids == v3.criterion_ids
     assert not v1.context and "What each role may see" not in system_prompt(v1)
     assert v2.context.split(".")[0] in system_prompt(v2)
+    assert v3.context == v2.context
 
 
 def test_rubric_digest_tracks_wording(rubric: Rubric) -> None:
