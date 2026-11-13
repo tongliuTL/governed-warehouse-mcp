@@ -65,8 +65,12 @@ def _tolerances(kind: str, abs_tol: float | None, rel_tol: float | None) -> tupl
 
 def grade_answer(case: AgentCase, gold: Sequence[Any] | None, traj: Trajectory) -> Grade:
     spec = case.answer
-    if spec is None or gold is None:
+    if spec is None:
         return Grade("answer", True, "no answer expected")
+    if not gold or gold[0] is None:
+        # The reference query found no value: a stale or broken warehouse, not a model error.
+        # Fail the grade with the cause instead of crashing the run (or passing it unchecked).
+        return Grade("answer", False, "reference query returned no value; run `gwm generate`")
     value = gold[0]
     if spec.kind == "entity":
         ok = str(value).lower() in traj.final_text.lower()

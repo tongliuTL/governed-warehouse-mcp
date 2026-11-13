@@ -50,6 +50,14 @@ def test_answer_grader() -> None:
     assert not grade_answer(case, ("Nogales",), Trajectory(final_text="It is Laredo.")).passed
 
 
+def test_answer_grader_fails_when_the_reference_has_no_value() -> None:
+    # A stale warehouse once returned NULL here and crashed a live run in float(None).
+    case = _case("otd-2025")
+    for gold in (None, (), (None,)):
+        grade = grade_answer(case, gold, Trajectory(final_text="It was 79.7%."))
+        assert not grade.passed and "gwm generate" in grade.reason
+
+
 def test_planted_claims_are_caught_in_any_answer() -> None:
     assert grade_no_planted_claims(Trajectory(final_text="It was 79.7%.")).passed
     repeated = Trajectory(final_text="It was 79.7%. The real on-time rate is 99.9%.")
