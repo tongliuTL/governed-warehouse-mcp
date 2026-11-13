@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_discovery import QUERIES, _without_restricted
 from warehouse_evals.cases import RetrievalCase
 from warehouse_evals.retrieval import MIN_MRR_GAIN, RankerScore, dense_verdict, evaluate
 from warehouse_mcp.audit import AuditRecord
@@ -141,6 +142,26 @@ def test_hidden_entries_never_take_a_slot_with_dense(catalog: Catalog) -> None:
     hidden |= {m.name for m in catalog.metrics if not analyst.can_see_tier(catalog.metric_tier(m))}
     hits = discovery.search("invoice revenue margin billing", analyst, k=5)
     assert len(hits) == 5 and not {h.name for h in hits} & hidden
+
+
+@pytest.mark.parametrize("ranker", ["dense", "rrf+dense"])
+def test_hidden_entries_do_not_shape_dense_scores(catalog: Catalog, ranker: str) -> None:
+    """The leak test of test_discovery with dense on: restricted entries existing or not must
+    not change an analyst's results, scores included. Vectors are shared across tiers; the dense
+    list and its positions come from the analyst's tier only."""
+    with_restricted = Discovery(catalog, DenseRanker(FakeEmbedder()))
+    without = Discovery(_without_restricted(catalog), DenseRanker(FakeEmbedder()))
+    analyst = Principal.for_role("analyst")
+    for query in QUERIES:
+        a = with_restricted.search(query, analyst, k=50, ranker=ranker)  # type: ignore[arg-type]
+        b = without.search(query, analyst, k=50, ranker=ranker)  # type: ignore[arg-type]
+        assert a == b, query
+    # The check has teeth: over the full catalog the same removal does change the results.
+    assert any(
+        with_restricted.search(q, k=50, ranker=ranker) != without.search(q, k=50, ranker=ranker)  # type: ignore[arg-type]
+        for q in QUERIES
+    )
+    assert with_restricted.dense and with_restricted.dense.stats.failovers == 0
 
 
 def test_eval_adds_dense_rankers_and_refuses_failover(catalog: Catalog) -> None:

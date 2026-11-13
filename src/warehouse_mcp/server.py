@@ -24,6 +24,8 @@ from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from warehouse_mcp.audit import AuditLog, AuditRecord
 from warehouse_mcp.catalog import DIALECT, Catalog, Tier, load_catalog
@@ -471,6 +473,27 @@ class GovernedWarehouse:
             )
 
         return mcp
+
+    def add_health_routes(self, mcp: MCPServer) -> None:
+        """Unauthenticated probes for an orchestrator, on the HTTP transport only.
+
+        ``/healthz`` says the process is up. ``/readyz`` also runs a trivial query, so it fails
+        (503) when the warehouse file is missing or unreadable. Neither returns data or names a
+        model; the catalog version is already public through ``catalog://version``."""
+
+        async def healthz(_: Request) -> Response:
+            return JSONResponse({"status": "ok"})
+
+        async def readyz(_: Request) -> Response:
+            try:
+                await anyio.to_thread.run_sync(self.warehouse.execute_trusted, "select 1")
+            except Exception:
+                log.exception("readiness check failed")
+                return JSONResponse({"status": "unavailable"}, status_code=503)
+            return JSONResponse({"status": "ready", "catalog_version": self.catalog.version})
+
+        for path, endpoint in (("/healthz", healthz), ("/readyz", readyz)):
+            mcp.custom_route(path, methods=["GET"], include_in_schema=False)(endpoint)
 
 
 def open_warehouse(

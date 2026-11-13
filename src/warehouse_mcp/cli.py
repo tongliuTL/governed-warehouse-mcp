@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from warehouse_mcp import auth
+from warehouse_mcp.agents import load_agents
 from warehouse_mcp.policy import ROLE_SCOPES
 from warehouse_mcp.synthetic import DEFAULT_SEED, build_warehouse
 
@@ -48,6 +49,7 @@ def _cmd_token(args: argparse.Namespace) -> int:
         ttl_s=args.ttl,
         issuer=args.issuer,
         audience=args.audience,
+        client_id=args.client_id,
     )
     print(token)
     return 0
@@ -62,7 +64,10 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     verifier = auth.JwtVerifier(
-        (args.keys / "public.pem").read_bytes(), issuer=args.issuer, audience=args.audience
+        (args.keys / "public.pem").read_bytes(),
+        issuer=args.issuer,
+        audience=args.audience,
+        agents=load_agents(args.agents),
     )
     gw = open_warehouse(
         args.db, audit_path=args.audit_log, config=ServerConfig(max_rows=args.max_rows, dense=args.dense)
@@ -80,7 +85,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             return 2
         gw.build_mcp(lambda: principal, log_level="INFO").run("stdio")
         return 0
-    base_url = f"http://{args.host}:{args.port}"
+    base_url = (args.public_url or f"http://{args.host}:{args.port}").rstrip("/")
     mcp = gw.build_mcp(
         principal_from_request,
         token_verifier=verifier,
@@ -92,12 +97,16 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         ),
         log_level="INFO",
     )
+    gw.add_health_routes(mcp)
+    # DNS-rebinding protection checks the Host header. Behind a container port mapping or a
+    # proxy the header is the public name, not the bind address, so deployments list it.
+    allowed = [f"{args.host}:{args.port}", args.host, *(args.allowed_host or [])]
     mcp.run(
         "streamable-http",
         host=args.host,
         port=args.port,
         transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True, allowed_hosts=[f"{args.host}:{args.port}", args.host]
+            enable_dns_rebinding_protection=True, allowed_hosts=allowed
         ),
     )
     return 0
@@ -128,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--scope", action="append", help="extra scope; repeatable")
             p.add_argument("--subject")
             p.add_argument("--ttl", type=int, default=3600)
+            p.add_argument("--client-id", default="local-dev", help="the agent the token is for")
             p.set_defaults(func=_cmd_token)
         else:
             p.add_argument("--db", type=Path, default=DEFAULT_DB)
@@ -136,6 +146,15 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--port", type=int, default=8000)
             p.add_argument("--max-rows", type=int, default=200)
             p.add_argument("--audit-log", type=Path, default=None, help="append audit records as JSONL")
+            p.add_argument(
+                "--agents", type=Path, default=None, help="agent registry YAML (default: local-dev only)"
+            )
+            p.add_argument(
+                "--allowed-host",
+                action="append",
+                help="extra Host header to accept on HTTP, e.g. localhost:8000; repeatable",
+            )
+            p.add_argument("--public-url", help="the server's external base URL, for OAuth metadata")
             p.add_argument(
                 "--dense",
                 action="store_true",

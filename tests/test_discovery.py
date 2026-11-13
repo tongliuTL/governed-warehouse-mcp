@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from warehouse_mcp.catalog import Catalog
+from warehouse_mcp.catalog import Catalog, Tier
 from warehouse_mcp.discovery import BM25, Discovery, tokenize
 from warehouse_mcp.policy import Principal
 
@@ -50,3 +50,40 @@ def test_rankers_return_ordered_scores(catalog: Catalog, ranker: str) -> None:
 def test_kind_filter(catalog: Catalog) -> None:
     hits = Discovery(catalog).search("on time rate", k=5, kind=lambda e: e.kind == "metric")
     assert hits and all(h.kind == "metric" for h in hits)
+
+
+def _without_restricted(catalog: Catalog) -> Catalog:
+    data = catalog.model_dump(by_alias=True)
+    hidden = {m.name for m in catalog.models if m.tier == Tier.RESTRICTED}
+    return catalog.replace(
+        models=[m for m in data["models"] if m["name"] not in hidden],
+        metrics=[m for m in data["metrics"] if m["model"] not in hidden],
+    )
+
+
+QUERIES = [
+    "revenue by customer",
+    "gross margin invoices",
+    "on time rate by carrier",
+    "late deliveries",
+    "how long do trucks wait at the border",
+    "customer contact email",
+    "quote acceptance",
+]
+
+
+@pytest.mark.parametrize("ranker", ["identifier", "description", "rrf"])
+def test_hidden_entries_do_not_shape_scores(catalog: Catalog, ranker: str) -> None:
+    """Restricted entries existing or not must not change what an analyst sees, scores included:
+    otherwise a score shift on "revenue" would reveal that a revenue model exists."""
+    with_restricted, without = Discovery(catalog), Discovery(_without_restricted(catalog))
+    analyst = Principal.for_role("analyst")
+    for query in QUERIES:
+        a = with_restricted.search(query, analyst, k=50, ranker=ranker)  # type: ignore[arg-type]
+        b = without.search(query, analyst, k=50, ranker=ranker)  # type: ignore[arg-type]
+        assert a == b, query
+    # The check has teeth: over the full catalog the same removal does change scores.
+    assert any(
+        with_restricted.search(q, k=50, ranker=ranker) != without.search(q, k=50, ranker=ranker)  # type: ignore[arg-type]
+        for q in QUERIES
+    )

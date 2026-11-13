@@ -12,10 +12,11 @@ security properties, and [evals.md](evals.md) covers the measurement method.
 | `warehouse_mcp.catalog` | Loads and validates the YAML catalog: models, tiers, PII and free-text columns, joins, metrics. Its content hash is the catalog version. |
 | `warehouse_mcp.policy` | Scopes, principals, the tier ladder, `visible_model`, and the `PolicyViolation` error type. |
 | `warehouse_mcp.auth` | Ed25519 JWT verification. Implements the MCP SDK's `TokenVerifier` for HTTP; dev key and token helpers. |
+| `warehouse_mcp.agents` | Agent registry (`agents.yaml`): each `client_id`'s permitted scopes, owner and enabled flag. Token scopes are intersected with it; unknown or disabled agents fail closed. |
 | `warehouse_mcp.semantic` | Compiles a `MetricRequest` into a sqlglot `Select`. |
 | `warehouse_mcp.sql_guard` | Checks any SQL against the catalog and the principal and returns regenerated SQL with a row limit. |
 | `warehouse_mcp.warehouse` | Read-only, sandboxed DuckDB connection with timeout, row fetch limit and JSON-safe values. |
-| `warehouse_mcp.discovery` | BM25 identifier and description rankers fused with RRF, filtered by what the caller may see. |
+| `warehouse_mcp.discovery` | BM25 identifier and description rankers fused with RRF, over one index per visibility tier, so hidden entries never shape a caller's scores. |
 | `warehouse_mcp.audit`, `ratelimit` | JSONL audit sink, and a per-principal token bucket. |
 | `warehouse_mcp.server` | `GovernedWarehouse`: the governance envelope, tool logic, and MCP wiring. |
 | `warehouse_mcp.cli` | `gwm generate · keys · token · serve`. |
@@ -25,7 +26,8 @@ security properties, and [evals.md](evals.md) covers the measurement method.
 
 1. **Principal.** Over HTTP, the MCP SDK's bearer-auth middleware calls `JwtVerifier.verify_token`
    and `principal_from_request` builds the principal from the verified access token. Over stdio,
-   the principal comes from the token verified at start-up. Missing → `UNAUTHENTICATED`.
+   the principal comes from the token verified at start-up. Either way its scopes are the
+   token's scopes intersected with its agent's permitted scopes. Missing → `UNAUTHENTICATED`.
 2. **Envelope.** `_begin` opens an `AuditRecord` and applies the rate limit (`RATE_LIMITED`).
 3. **Tool logic** runs in a worker thread, so DuckDB never blocks the event loop.
    - `query_metric` validates the request, compiles it from the catalog, then sends the compiled
@@ -101,7 +103,9 @@ one question set and loses the other.
 An optional dense ranker (`dense.py`, `gwm serve --dense`) joins the fusion as a third list
 without changing the tool interface. It runs a local ONNX model, so no catalog text or query
 leaves the machine. Entry vectors are cached per catalog version and model ID, and a cache from
-another model is refused rather than mixed in. Any failure falls back to the lexical lists, logs
+another model is refused rather than mixed in. Vectors are shared across tiers (an entry's
+vector depends on its own text only), but the dense list is ranked over the caller's tier index,
+like the lexical lists, so a hidden entry never takes a position in it. Any failure falls back to the lexical lists, logs
 a warning, counts a failover and is recorded in the audit log. It is off by default because the
 held-out measurement shows no gain beyond noise ([evals](evals.md#dense-ranker-optional)).
 

@@ -41,6 +41,25 @@ class Reference(_Strict):
     answer: str
 
 
+class Attack(_Strict):
+    """What obeying the planted instruction looks like, for the ``injection_follower`` policy:
+    tool calls made after the reference ones, a sentence added to the answer, and the graders
+    that must catch it. Cases without one get the generic follower (DROP plus the false rate)."""
+
+    calls: tuple[ReferenceCall, ...] = ()
+    answer: str = ""
+    trips: tuple[str, ...]
+
+
+class CatalogPatch(_Strict):
+    """Replace one description in the catalog this case's server sees: a poisoned producer.
+    The shared catalog is untouched, so other cases (and their cached verdicts) are not."""
+
+    model: str
+    column: str | None = None
+    description: str
+
+
 class AgentCase(_Strict):
     id: str
     suite: Literal["answer", "governance", "injection"]
@@ -50,6 +69,11 @@ class AgentCase(_Strict):
     answer: AnswerSpec | None = None
     expect: Expectations = Expectations()
     reference: Reference
+    attack: Attack | None = None
+    catalog_patch: CatalogPatch | None = None
+    # False until the judge has verdicts for this case's trajectories: offline calibration
+    # (CI) skips it, `gwm-eval calibrate --live` judges it. Flip it once the verdicts are committed.
+    calibrated: bool = True
 
     def model_post_init(self, _context: Any) -> None:
         if self.role not in ROLE_SCOPES:

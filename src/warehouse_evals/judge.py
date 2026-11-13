@@ -332,27 +332,7 @@ class ClaudeJudge:
                 if attempt == JUDGE_ATTEMPTS:
                     raise JudgeError(f"{label}: {exc}") from exc
                 messages.append({"role": "assistant", "content": response.content})
-                if call is None:
-                    messages.append(
-                        {"role": "user", "content": f"Record your grades by calling {VERDICT_TOOL}."}
-                    )
-                else:
-                    feedback = (
-                        f"{exc}. Call {VERDICT_TOOL} again with a reason and a verdict for every criterion."
-                    )
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": call.id,
-                                    "is_error": True,
-                                    "content": feedback,
-                                }
-                            ],
-                        }
-                    )
+                messages.append({"role": "user", "content": _correction(response.content, call, exc)})
                 continue
             return Judgment(
                 case_id=item.case_id,
@@ -406,6 +386,26 @@ def _parse_verdicts(data: Any, ids: Sequence[str]) -> dict[str, CriterionVerdict
             raise JudgeError(f"{cid}: invalid verdict {verdict!r}; use one of {', '.join(VERDICTS)}")
         out[cid] = CriterionVerdict(verdict=verdict, reason=str(entry.get("reason", "")))
     return out
+
+
+def _correction(content: Sequence[Any], call: Any, exc: JudgeError) -> str | list[dict[str, Any]]:
+    """The user turn that asks for a corrected call. Every ``tool_use`` in the reply needs its
+    own ``tool_result`` (providers reject the turn otherwise), so a second or wrongly named call
+    is answered too; with no tool call at all, a plain nudge."""
+    uses = [b for b in content if b.type == "tool_use"]
+    if not uses:
+        return f"Record your grades by calling {VERDICT_TOOL}."
+    feedback = f"{exc}. Call {VERDICT_TOOL} again with a reason and a verdict for every criterion."
+    other = f"Only {VERDICT_TOOL} is available; call it exactly once."
+    return [
+        {
+            "type": "tool_result",
+            "tool_use_id": b.id,
+            "is_error": True,
+            "content": feedback if b is call else other,
+        }
+        for b in uses
+    ]
 
 
 class MissingJudgment(LookupError):

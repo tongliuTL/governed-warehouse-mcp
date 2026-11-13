@@ -7,12 +7,21 @@ Two lexical rankers are fused with Reciprocal Rank Fusion (RRF, k=60):
   ``border_crossing`` and ``mart_border_crossing_dwell``;
 - a description ranker: BM25 over descriptions, grain and column descriptions.
 
-A naive substring baseline is kept for the retrieval eval's ablation.
+Access is enforced by construction: there is one index per visibility tier, built only from the
+entries that tier may see, and a caller searches the index for its highest tier. Filtering
+after ranking would hide restricted entries but still let them shape IDF, length
+normalisation and RRF ranks, so a caller could infer from scores that a restricted entry
+matching its query exists.
 
 An optional third list, a dense ranker over a local embedding model (``dense.py``), joins the
-fusion when a ``DenseRanker`` is passed in (``rrf+dense``). It is off by default, so the server
-has no model dependency and results are deterministic. If the dense ranker fails for any reason,
-the query is served by the two lexical lists, a warning is logged and a failover is counted.
+fusion when a ``DenseRanker`` is passed in (``rrf+dense``). Entry vectors are computed once for
+the whole catalog (an entry's vector depends on its own text only), but the dense list is
+ranked over the caller's tier index alone, so its positions, and the RRF scores they feed,
+never depend on an entry the caller cannot see. It is off by default, so the server has no
+model dependency and results are deterministic. If the dense ranker fails for any reason, the
+query is served by the two lexical lists, a warning is logged and a failover is counted.
+
+A naive substring baseline is kept for the retrieval eval's ablation.
 """
 
 from __future__ import annotations
@@ -31,8 +40,8 @@ from warehouse_mcp.policy import Principal
 
 log = logging.getLogger(__name__)
 
-RRF_K = 60
 DENSE_CANDIDATES = 20  # the dense list joins the fusion with its top entries only
+RRF_K = 60
 _STOPWORDS = frozenset(
     [
         "a",
@@ -161,6 +170,7 @@ class Hit:
 @dataclass
 class _Index:
     entries: list[Entry]
+    positions: list[int]  # each entry's position in the full catalog list (for dense vectors)
     identifier: BM25 = field(init=False)
     description: BM25 = field(init=False)
 
@@ -203,60 +213,83 @@ class Discovery:
                     description_text=metric.description,
                 )
             )
-        self._index = _Index(entries)
+        self.entries = entries
+        # One index per visibility tier, each built only from the entries that tier may see.
+        # BM25 statistics (IDF, average length) and the ranks RRF fuses then never depend on an
+        # entry the caller cannot see, so neither scores nor order can hint that one exists.
+        self._tiers = {
+            tier: _Index(
+                [e for e in entries if e.tier <= tier], [i for i, e in enumerate(entries) if e.tier <= tier]
+            )
+            for tier in Tier
+        }
 
-    def _visible(self, principal: Principal | None) -> list[bool]:
+    def _index_for(self, principal: Principal | None) -> _Index | None:
+        """The index this caller searches; ``None`` (unfiltered, for offline evals) gets the
+        full catalog, a principal with no data scope gets nothing."""
         if principal is None:
-            return [True] * len(self._index.entries)
-        return [principal.can_see_tier(e.tier) for e in self._index.entries]
+            return self._tiers[max(Tier)]
+        tier = principal.max_tier
+        return None if tier is None else self._tiers[tier]
 
-    def _dense_ranked(self, query: str) -> list[tuple[int, float]] | None:
-        """The dense list, or None when there is no dense ranker or it failed (a failover)."""
+    def _dense_ranked(self, query: str, index: _Index) -> list[tuple[int, float]] | None:
+        """The dense list over ``index`` (positions within it), or None when there is no dense
+        ranker or it failed (a failover). Vectors cover the whole catalog and are cached once per
+        catalog version; only the tier's entries are scored and ranked."""
         if self.dense is None:
             return None
-        entries = self._index.entries
         try:
             scores = self.dense.scores(
                 query,
                 self.catalog.version,
-                [f"{e.kind}:{e.name}" for e in entries],
-                [_dense_text(e) for e in entries],
+                [f"{e.kind}:{e.name}" for e in self.entries],
+                [_dense_text(e) for e in self.entries],
             )
         except Exception as err:  # any failure: serve the lexical result instead
             self.dense.stats.failovers += 1
             log.warning("dense ranker failed, serving lexical results: %s", err)
             return None
-        return self._order(scores)[:DENSE_CANDIDATES]
+        return self._order([scores[p] for p in index.positions])[:DENSE_CANDIDATES]
 
-    def rank(self, query: str, ranker: Ranker = "rrf") -> list[tuple[int, float]]:
-        """Indices into the entry list with scores, best first, before access filtering."""
-        return self.rank_explained(query, ranker)[0]
+    def rank(
+        self, query: str, ranker: Ranker = "rrf", principal: Principal | None = None
+    ) -> list[tuple[Entry, float]]:
+        """Entries with scores, best first, from the index the principal may search."""
+        return self.rank_explained(query, ranker, principal)[0]
 
-    def rank_explained(self, query: str, ranker: Ranker = "rrf") -> tuple[list[tuple[int, float]], str]:
+    def rank_explained(
+        self, query: str, ranker: Ranker = "rrf", principal: Principal | None = None
+    ) -> tuple[list[tuple[Entry, float]], str]:
         """``rank`` plus the ranker that actually served the query, which differs from the one
         asked for when the dense ranker failed over to the lexical lists."""
+        index = self._index_for(principal)
+        if index is None:
+            return [], ranker
         tokens = tokenize(query)
-        index = self._index
+        used: str = ranker
         if ranker == "substring":
             words = [w for w in query.lower().split() if w not in _STOPWORDS]
             raw = [float(sum(w in e.identifier_text.lower() for w in words)) for e in index.entries]
-            return self._order(raw), ranker
-        if ranker == "identifier":
-            return self._order(index.identifier.scores(tokens)), ranker
-        if ranker == "description":
-            return self._order(index.description.scores(tokens)), ranker
-        lists = [self._order(index.identifier.scores(tokens)), self._order(index.description.scores(tokens))]
-        used: str = "rrf"
-        if ranker in ("dense", "rrf+dense"):
-            dense = self._dense_ranked(query)
+            ranked = self._order(raw)
+        elif ranker == "identifier":
+            ranked = self._order(index.identifier.scores(tokens))
+        elif ranker == "description":
+            ranked = self._order(index.description.scores(tokens))
+        else:
+            lists = [
+                self._order(index.identifier.scores(tokens)),
+                self._order(index.description.scores(tokens)),
+            ]
+            wants_dense = ranker in ("dense", "rrf+dense")
+            dense = self._dense_ranked(query, index) if wants_dense else None
             if dense is None:
-                used = LEXICAL_FALLBACK
+                used = LEXICAL_FALLBACK if wants_dense else "rrf"
+                ranked = fuse(lists)
             elif ranker == "dense":
-                return dense, ranker
+                ranked = dense
             else:
-                lists.append(dense)
-                used = ranker
-        return fuse(lists), used
+                ranked = fuse([*lists, dense])
+        return [(index.entries[i], score) for i, score in ranked], used
 
     @staticmethod
     def _order(scores: list[float]) -> list[tuple[int, float]]:
@@ -281,14 +314,11 @@ class Discovery:
         ranker: Ranker | None = None,
         kind: Callable[[Entry], bool] | None = None,
     ) -> tuple[list[Hit], str]:
-        """``search`` plus the ranker that served it. Access filtering runs after ranking and
-        before truncation to k, whatever the ranker: a hidden entry never takes a slot."""
-        visible = self._visible(principal)
+        """``search`` plus the ranker that served it (see ``rank_explained``)."""
         hits: list[Hit] = []
-        ranked, used = self.rank_explained(query, ranker or self.default_ranker)
-        for i, score in ranked:
-            entry = self._index.entries[i]
-            if not visible[i] or (kind is not None and not kind(entry)):
+        ranked, used = self.rank_explained(query, ranker or self.default_ranker, principal)
+        for entry, score in ranked:
+            if kind is not None and not kind(entry):
                 continue
             hits.append(
                 Hit(kind=entry.kind, name=entry.name, description=entry.description, score=round(score, 4))

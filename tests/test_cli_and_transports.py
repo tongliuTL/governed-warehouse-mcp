@@ -134,6 +134,14 @@ def http_server(
     proc.wait(timeout=10)
 
 
+def test_http_health_probes_need_no_token(http_server: tuple[str, Path]) -> None:
+    base = http_server[0].removesuffix("/mcp")
+    assert httpx2.get(f"{base}/healthz").json() == {"status": "ok"}
+    ready = httpx2.get(f"{base}/readyz")
+    assert ready.status_code == 200 and ready.json()["status"] == "ready"
+    assert set(ready.json()) == {"status", "catalog_version"}  # no data, no model names
+
+
 def test_http_requires_a_valid_bearer_token(http_server: tuple[str, Path]) -> None:
     url, _ = http_server
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}

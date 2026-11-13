@@ -47,7 +47,25 @@ All three must pass. Type checking is `mypy --strict` over `src/`.
 - **A grader or planted-failure policy:** update `validation.expected_failures` so the
   validation suite knows what the new policy should trip.
 - **A retrieval case:** add it to the dev set (`retrieval_cases.yaml`). Keep the held-out set
-  for reporting; do not tune against it.
+  for reporting; do not tune against it. Queries the live agent sent go to the real set through
+  `gwm-eval harvest`, never by hand (see [docs/evals.md](docs/evals.md#real-queries)).
+
+## The regression baseline
+
+`gwm-eval all --gate` fails if any case that passes in `evals/baseline.json` fails now, or if a
+retrieval metric falls more than 0.05 below it. When a change is meant to move the numbers (a
+new case, a ranker change, a case that now passes), update the baseline in the same pull request
+and say why in the description:
+
+```bash
+uv run gwm-eval baseline            # what would change, without writing anything
+uv run gwm-eval baseline --update   # rewrite evals/baseline.json; refuses while a gate fails
+git diff evals/baseline.json        # review it like code
+```
+
+Never update the baseline to make a regression go away. If `main` fails the gate, CI opens an
+issue labelled `eval-regression` for the code owner and closes it when `main` is green again;
+`gwm-eval history` shows when each case last changed state.
 
 ## Live evals
 
@@ -70,6 +88,12 @@ uv run gwm-eval calibrate --live --model MiniMax-M3.1-Flash --min-kappa 0.6
 
 A rubric change is a new file (`answer_quality_v<N+1>.yaml`); keep earlier versions so their
 results stay reproducible.
+
+A new agent case can land before it is judged: mark it `calibrated: false` and the offline run
+skips it (and says so). Remove the flag in the change that commits its verdicts. To add a case
+without touching the others' verdicts, append any data it needs after the existing rows, and
+plant catalog text with a per-case `catalog_patch` rather than editing the shared catalog: every
+tool result carries the catalog version, so a catalog edit changes every trajectory.
 
 ## Commits and pull requests
 

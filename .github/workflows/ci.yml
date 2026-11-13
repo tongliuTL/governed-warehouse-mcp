@@ -47,6 +47,9 @@ jobs:
   evals:
     name: Offline evals (no API key)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read  # to restore the eval history artifact of the last run on main
     env:
       # Proves the gate needs no credentials: any real API call would fail.
       ANTHROPIC_API_KEY: ""
@@ -58,23 +61,114 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: uv run gwm generate
+      - name: Restore eval history (telemetry) from the last run on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push \
+            --status completed --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$run_id" ] && gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name eval-history --dir reports; then
+            echo "restored eval history from run $run_id"
+          else
+            echo "no earlier eval history; starting a new one"
+          fi
       - name: Retrieval, grader validation, scripted agent cases (+ replayed cassettes when present)
         run: uv run gwm-eval all --gate
       - name: Judge calibration from the committed verdicts (no model calls)
         run: uv run gwm-eval calibrate --model MiniMax-M3.1-Flash --min-kappa 0.6
-      - run: cat reports/report.md reports/calibration-*.md >> "$GITHUB_STEP_SUMMARY"
+      - run: |
+          cat reports/report.md reports/calibration-*.md >> "$GITHUB_STEP_SUMMARY"
+          uv run gwm-eval history --last 10 >> "$GITHUB_STEP_SUMMARY" || true
         if: always()
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: eval-report
           path: reports/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-history
+          path: reports/history.duckdb
+          retention-days: 90
+          if-no-files-found: ignore
+
+  eval-alert:
+    # A red badge nobody watches is not a gate. When the evals fail on main, open (or comment
+    # on) one tracking issue assigned to the code owner; when main is green again, close it.
+    # Runs only for pushes to main, checks out nothing, and is the only job that may write issues.
+    name: Eval alert (main only)
+    needs: evals
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.evals.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RESULT: ${{ needs.evals.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      SHA: ${{ github.sha }}
+      FALLBACK_OWNER: ${{ github.repository_owner }}
+    steps:
+      - name: Open, update or close the eval-regression issue
+        run: |
+          owner=$(gh api "repos/$GH_REPO/contents/.github/CODEOWNERS?ref=$SHA" --jq .content 2>/dev/null \
+            | base64 -d 2>/dev/null | awk '$1 == "*" { sub(/^@/, "", $2); print $2; exit }')
+          owner=${owner:-$FALLBACK_OWNER}
+          issue=$(gh issue list --label eval-regression --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ "$RESULT" = "success" ]; then
+            if [ -n "$issue" ]; then
+              gh issue close "$issue" --comment "Evals pass again on main at $SHA ($RUN_URL)."
+            fi
+            exit 0
+          fi
+          body="The offline eval gate failed on main at $SHA: $RUN_URL
+
+          The run's step summary shows which gate failed and the eval history (cases that changed state).
+          Reproduce locally with: uv run gwm generate && uv run gwm-eval all --gate"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh label create eval-regression --color B60205 \
+              --description "The offline eval gate is failing on main" 2>/dev/null || true
+            gh issue create --title "Eval gate failing on main" --label eval-regression \
+              --assignee "$owner" --body "$body"
+          fi
+
+  docker:
+    name: Docker image (build and smoke test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Build
+        run: docker build --build-arg UV_VERSION="$(uv --version | cut -d' ' -f2)" -t gwm:ci .
+      - name: Run with a read-only root filesystem and only the public key mounted
+        run: |
+          uv run gwm keys --dir .keys
+          docker run -d --name gwm --read-only --tmpfs /tmp -p 8000:8000 \
+            -v "$PWD/.keys/public.pem:/keys/public.pem:ro" gwm:ci
+          for _ in $(seq 1 30); do curl -fsS localhost:8000/readyz && exit 0; sleep 1; done
+          exit 1
+      - name: Smoke test (probes, bearer auth, governed queries)
+        run: uv run python scripts/smoke_http.py http://localhost:8000 --keys .keys
+      - name: Runs as a non-root user
+        run: test "$(docker exec gwm id -u)" = 10001
+      - name: Container logs
+        if: always()
+        run: docker logs gwm || true
 
   dense:
     name: Dense retrieval (report only)
     runs-on: ubuntu-latest
     # Measures the optional dense ranker; never blocks a merge. The default (lexical) path is
-    # gated in the evals job.
+    # gated in the evals job, and dense rankers are never part of the regression baseline.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
