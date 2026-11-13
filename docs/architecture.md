@@ -89,7 +89,7 @@ Agents need to tell "try a different metric" apart from "you are not allowed", a
 grade that without parsing prose. Every denial starts with an uppercase code. `server.error_code`
 is the single parser for that format, and both the eval agent and the tests use it.
 
-### Lexical retrieval with fusion, no embeddings
+### Lexical retrieval with fusion; embeddings optional
 
 Catalog search uses two BM25 rankers fused with RRF (k=60):
 - one over identifiers, aliases, synonyms and column names, with snake_case and camelCase split
@@ -98,8 +98,16 @@ Catalog search uses two BM25 rankers fused with RRF (k=60):
 
 This keeps the server deterministic and free of model dependencies, so the retrieval eval is
 reproducible. The ablation in the eval report shows why fusion is used: each single ranker wins
-one question set and loses the other. A dense ranker would slot into the fusion without changing
-the interface.
+one question set and loses the other.
+
+An optional dense ranker (`dense.py`, `gwm serve --dense`) joins the fusion as a third list
+without changing the tool interface. It runs a local ONNX model, so no catalog text or query
+leaves the machine. Entry vectors are cached per catalog version and model ID, and a cache from
+another model is refused rather than mixed in. Vectors are shared across tiers (an entry's
+vector depends on its own text only), but the dense list is ranked over the caller's tier index,
+like the lexical lists, so a hidden entry never takes a position in it. Any failure falls back to the lexical lists, logs
+a warning, counts a failover and is recorded in the audit log. It is off by default because the
+held-out measurement shows no gain beyond noise ([evals](evals.md#dense-ranker-optional)).
 
 ### A hand-written agent loop
 

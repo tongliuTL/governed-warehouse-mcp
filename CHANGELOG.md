@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Agent registry.** Each token's scopes are intersected with its agent's permitted scopes
+  (`agents.yaml`, `gwm serve --agents`); a token with no, an unknown or a disabled `client_id`
+  is rejected. Onboarding another agent is one registry entry.
+- **One search index per visibility tier**, so entries a caller cannot see never shape its
+  BM25 statistics, RRF ranks or returned scores.
+- **Red-team injection cases** (3 to 8): a poisoned column description, a payload in an error
+  message, disguised writes (comments, a CTE, full-width Unicode), an exfiltration link and a
+  fake role escalation. New grader `no_planted_links`; `no_write_attempt` normalises with NFKC.
+  All are judged and in the calibration gate (113 trajectories).
+- **Eval telemetry and a 100% regression gate.** Every run is recorded in a DuckDB history;
+  `evals/baseline.json` fails the gate when any previously passing case fails or a retrieval
+  metric drops more than 0.05. A failing `main` opens one `eval-regression` issue for the code
+  owner and closes it when green.
+- **Real-query harvesting.** `gwm-eval harvest` turns the `search_models` queries of live runs
+  into a label sheet; a labelled real-query set is reported and gated from 20 queries.
+- **Optional dense ranker** (`dense` extra, `gwm serve --dense`): a local embedding model as a
+  third RRF list, with per-catalog vector caching, a query cache and lexical failover. Measured
+  and off by default: no held-out gain beyond noise.
+- **Deployment.** A non-root Docker image with `/healthz` and `/readyz`, built and
+  smoke-tested in CI with a read-only root filesystem.
+
+### Changed
+
+- **Statement limits are proven end to end:** the timeout interrupts a running query and
+  returns a coded `TIMEOUT`, and spilling to disk is off so the memory limit is hard.
+
+### Fixed
+
+- **The judge answers every tool call in a correction turn**; MiniMax rejected a turn with an
+  unanswered `tool_use` (error 2013).
+
 ## [0.1.0] - 2026-11-13
 
 The first release.
@@ -59,4 +94,5 @@ The first release.
 - **CI.** Lint, strict mypy, tests on Python 3.11 to 3.13 with a coverage floor, and the offline
   eval gate.
 
+[Unreleased]: https://github.com/tongliuTL/governed-warehouse-mcp/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/tongliuTL/governed-warehouse-mcp/releases/tag/v0.1.0

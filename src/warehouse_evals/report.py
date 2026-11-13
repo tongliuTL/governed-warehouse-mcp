@@ -18,6 +18,7 @@ class Report:
     agent: dict[str, list[CaseResult]] = field(default_factory=dict)  # label -> results
     validation: list[ValidationRow] = field(default_factory=list)
     retrieval: dict[str, list[RankerScore]] = field(default_factory=dict)  # set name -> scores
+    dense_verdict: str | None = None  # set when the dense ranker was measured
 
 
 def _pct(x: float) -> str:
@@ -133,4 +134,6 @@ def render_markdown(report: Report, retrieval_sizes: dict[str, int]) -> str:
         lines += _validation_section(report.validation)
     for name, scores in report.retrieval.items():
         lines += _retrieval_section(name, scores, retrieval_sizes.get(name, 0))
+    if report.dense_verdict:
+        lines += [f"**Dense ranker:** {report.dense_verdict}.", ""]
     return "\n".join(lines).rstrip() + "\n"

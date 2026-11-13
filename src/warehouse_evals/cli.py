@@ -30,13 +30,15 @@ from warehouse_evals.agent import DEFAULT_MODEL
 from warehouse_evals.cases import load_agent_cases, load_retrieval_cases
 from warehouse_evals.judge import DEFAULT_JUDGE_EFFORT, DEFAULT_JUDGE_MODEL, DEFAULT_RUBRIC
 from warehouse_evals.report import Report, render_markdown
-from warehouse_evals.retrieval import evaluate
+from warehouse_evals.retrieval import GATE_RECALL_AT_3, dense_verdict, evaluate
 from warehouse_evals.runner import EvalContext, result_dict, run_live, run_replay, run_scripted
 from warehouse_evals.validation import validate_graders
+from warehouse_mcp.dense import DEFAULT_MODEL as DEFAULT_DENSE_MODEL
+from warehouse_mcp.dense import DenseRanker, FastEmbedder, default_cache_dir
 from warehouse_mcp.synthetic import DEFAULT_SEED, build_warehouse
 
 HELDOUT = Path(__file__).parent / "cases" / "retrieval_heldout.yaml"
-GATES = {"reference_pass_rate": 1.0, "grader_validation": 1.0, "retrieval_recall_at_3": 0.9}
+GATES = {"reference_pass_rate": 1.0, "grader_validation": 1.0, "retrieval_recall_at_3": GATE_RECALL_AT_3}
 REAL_GATE_MIN = 20  # the real-query set is reported always, gated from this many cases
 
 
@@ -63,6 +65,8 @@ def _write(report: Report, out: Path, sizes: dict[str, int]) -> None:
         ],
         "retrieval": {k: [asdict(s) for s in v] for k, v in report.retrieval.items()},
     }
+    if report.dense_verdict:
+        payload["dense_verdict"] = report.dense_verdict
     (out / "report.json").write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
     (out / "report.md").write_text(render_markdown(report, sizes), encoding="utf-8")
     print(f"wrote {out / 'report.md'} and {out / 'report.json'}", file=sys.stderr)
@@ -77,6 +81,21 @@ def _meta(ctx: EvalContext, note: str) -> dict[str, Any]:
     }
 
 
+def _dense_ranker(args: argparse.Namespace) -> DenseRanker | None:
+    """The dense ranker as the server builds it (document vectors cached per catalog), warmed
+    up so a missing extra or model fails now rather than as a failover on every query."""
+    cache = default_cache_dir()
+    dense = DenseRanker(
+        FastEmbedder(args.dense_model or DEFAULT_DENSE_MODEL, cache / "models"), cache_dir=cache
+    )
+    try:
+        dense.embedder.embed_query("warm up")
+    except Exception as err:
+        print(f"--dense: the dense ranker cannot run: {err}", file=sys.stderr)
+        return None
+    return dense
+
+
 def _history_path(args: argparse.Namespace) -> Path:
     path: Path = args.history or args.out / "history.duckdb"
     return path
@@ -88,7 +107,12 @@ def _record(args: argparse.Namespace, report: Report, command: str, failures: li
     print(f"recorded run {run_id} in {path}", file=sys.stderr)
 
 
-async def _offline_report(args: argparse.Namespace) -> tuple[Report, dict[str, int]]:
+async def _offline_report(
+    args: argparse.Namespace, dense: DenseRanker | None = None
+) -> tuple[Report, dict[str, int]]:
+    """``dense`` adds the dense and rrf+dense rankers to the ablation. They are reported, never
+    gated: the baseline compares only the rankers it recorded, and ``baseline --update`` never
+    measures dense, so the accepted baseline stays the default (lexical) path."""
     ctx = _context(args)
     cases = load_agent_cases()
     note = (
@@ -104,7 +128,10 @@ async def _offline_report(args: argparse.Namespace) -> tuple[Report, dict[str, i
     sets = {"dev set": load_retrieval_cases(), "held-out set": load_retrieval_cases(HELDOUT)}
     if harvest.REAL.exists():
         sets["real set"] = load_retrieval_cases(harvest.REAL)
-    report.retrieval = {name: evaluate(ctx.catalog, items) for name, items in sets.items()}
+    report.retrieval = {name: evaluate(ctx.catalog, items, dense) for name, items in sets.items()}
+    report.dense_verdict = dense_verdict(report.retrieval)
+    if report.dense_verdict:
+        print(f"dense retrieval: {report.dense_verdict}", file=sys.stderr)
     ctx.close()
     return report, {name: len(items) for name, items in sets.items()}
 
@@ -151,7 +178,12 @@ def _regressions(args: argparse.Namespace, report: Report, sizes: dict[str, int]
 
 
 async def _all(args: argparse.Namespace) -> int:
-    report, sizes = await _offline_report(args)
+    dense = None
+    if args.dense:
+        dense = _dense_ranker(args)
+        if dense is None:
+            return 2
+    report, sizes = await _offline_report(args, dense)
     _write(report, args.out, sizes)
     failures = _absolute_gates(report, sizes) + _regressions(args, report, sizes)
     _record(args, report, "all", failures)
@@ -389,6 +421,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_all.add_argument("--cassettes", type=Path, default=Path("cassettes"))
     p_all.add_argument("--gate", action="store_true", help="exit 1 when a gate fails")
     p_all.add_argument("--baseline", type=Path, default=baseline.BASELINE)
+    p_all.add_argument(
+        "--dense", action="store_true", help="also measure the dense ranker (needs the 'dense' extra)"
+    )
+    p_all.add_argument("--dense-model", default=None, help="embedding model for --dense")
     p_all.set_defaults(func=_all)
     p_base = sub.add_parser("baseline", help="compare with the regression baseline, or --update it")
     p_base.add_argument("--cassettes", type=Path, default=Path("cassettes"))

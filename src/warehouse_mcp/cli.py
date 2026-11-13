@@ -69,7 +69,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         audience=args.audience,
         agents=load_agents(args.agents),
     )
-    gw = open_warehouse(args.db, audit_path=args.audit_log, config=ServerConfig(max_rows=args.max_rows))
+    gw = open_warehouse(
+        args.db, audit_path=args.audit_log, config=ServerConfig(max_rows=args.max_rows, dense=args.dense)
+    )
     if args.transport == "stdio":
         # stdio has no per-request auth, so the token is verified once at start-up.
         token = os.environ.get("GWM_TOKEN")
@@ -153,6 +155,12 @@ def build_parser() -> argparse.ArgumentParser:
                 help="extra Host header to accept on HTTP, e.g. localhost:8000; repeatable",
             )
             p.add_argument("--public-url", help="the server's external base URL, for OAuth metadata")
+            p.add_argument(
+                "--dense",
+                action="store_true",
+                default=os.environ.get("GWM_DENSE", "").lower() in ("1", "true", "yes"),
+                help="fuse a local dense ranker into search_models (needs the 'dense' extra; env GWM_DENSE=1)",
+            )
             p.set_defaults(func=_cmd_serve)
     return parser
 

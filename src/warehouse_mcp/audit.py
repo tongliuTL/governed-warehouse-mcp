@@ -34,6 +34,7 @@ class AuditRecord:
     row_count: int | None = None
     truncated: bool | None = None
     elapsed_ms: int | None = None
+    ranker: str | None = None  # search_models only: the ranker that served the query
     arguments: dict[str, object] = field(default_factory=dict)
     ts: str = field(default_factory=lambda: datetime.now(UTC).isoformat(timespec="milliseconds"))
 
