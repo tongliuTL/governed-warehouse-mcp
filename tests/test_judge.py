@@ -38,6 +38,7 @@ from warehouse_evals.judge import (
     Rubric,
     Verdict,
     load_rubric,
+    system_prompt,
     verdict_schema,
 )
 from warehouse_evals.runner import EvalContext, offline_client
@@ -116,9 +117,21 @@ def _oracle(rubric: Rubric, ctx: EvalContext, cases: list[AgentCase], items: lis
 
 
 def test_rubric_loads_and_every_mapped_criterion_exists(rubric: Rubric) -> None:
-    assert rubric.key == "answer_quality@v1"
+    assert rubric.key == "answer_quality@v2"
     assert set(REFERENCE) < set(rubric.criterion_ids)
     assert "clear_and_concise" in rubric.criterion_ids  # human-only criterion
+
+
+def test_v1_digest_is_pinned() -> None:
+    # Cached v1 verdicts are keyed by this digest; a change here silently orphans them.
+    assert load_rubric("answer_quality_v1").digest() == "0f150ba95fe980fe"
+
+
+def test_every_rubric_version_loads_and_context_reaches_the_prompt() -> None:
+    v1, v2 = load_rubric("answer_quality_v1"), load_rubric("answer_quality_v2")
+    assert v1.criterion_ids == v2.criterion_ids
+    assert not v1.context and "What each role may see" not in system_prompt(v1)
+    assert v2.context.split(".")[0] in system_prompt(v2)
 
 
 def test_rubric_digest_tracks_wording(rubric: Rubric) -> None:
@@ -351,9 +364,9 @@ def test_cli_calibrate_offline(
     arun(collect(ctx, cases, filler))
     labels = tmp_path / "labels.jsonl"
     assert cli.main([*base, "--export-labels", str(labels), "--min-kappa", "0.9"]) == 0
-    report = (out / "calibration-answer_quality-v1.md").read_text(encoding="utf-8")
+    report = (out / "calibration-answer_quality-v2.md").read_text(encoding="utf-8")
     assert "Judge vs deterministic graders" in report and "| `respects_access` |" in report
-    payload = json.loads((out / "calibration-answer_quality-v1.json").read_text(encoding="utf-8"))
+    payload = json.loads((out / "calibration-answer_quality-v2.json").read_text(encoding="utf-8"))
     assert all(row["kappa"] == 1.0 for row in payload["tables"]["deterministic graders"])
     assert labels.exists()
     assert cli.main([*base, "--labels", str(labels)]) == 0

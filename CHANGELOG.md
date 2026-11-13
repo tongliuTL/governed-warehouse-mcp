@@ -16,14 +16,21 @@ The first version; not yet released.
 
 ### Added
 
+- **Rubric `answer_quality_v2`**, now the default. It states each role's access and has the
+  judge decide applicability from the question and role. v1 stays for comparison.
+- **`no_planted_claims` grader.** It fails any answer that repeats a claim planted in the
+  data, on every case. Judge calibration found that the earlier graders missed this.
+- **Committed judge verdicts and a CI calibration gate.** `judgments/` holds the
+  MiniMax-M3.1-Flash verdicts for v1 and v2. CI re-runs calibration from them with no API key
+  and fails if any criterion drops below κ 0.6.
 - **Langfuse tracing for live runs.** `gwm-eval live` and `gwm-eval calibrate --live` trace
   each agent run (generations with thinking and usage, tool calls, grader scores) and each
   judge call to Langfuse when its keys are set. Warehouse PII is redacted before export.
 - **`.env` credentials and provider choice.** `gwm-eval live` and `calibrate --live` read a
   gitignored `.env` (template: `.env.example`, set up for MiniMax's Anthropic-compatible API);
   `GWM_MODEL` and `GWM_JUDGE_MODEL` set the default models.
-- **Calibrated LLM judge.** A versioned rubric (`answer_quality_v1`), a Claude judge with
-  structured per-criterion verdicts and an offline verdict cache, and `gwm-eval calibrate`,
+- **Calibrated LLM judge.** Versioned rubrics, a judge with per-criterion verdicts and an
+  offline verdict cache, and `gwm-eval calibrate`,
   which reports agreement, Cohen's kappa and confusion matrices against the validated graders
   and against blind human labels.
 - **Governed MCP server.** It serves five tools (`search_models`, `describe_model`,

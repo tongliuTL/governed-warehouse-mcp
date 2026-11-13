@@ -267,7 +267,8 @@
     SELECT avg(CASE WHEN delivered_date <= promised_delivery_date THEN 1.0 ELSE 0.0 END)
     FROM fct_shipments WHERE status = 'delivered'
   answer: {kind: ratio}
-  expect: {tools_any: [query_metric, run_sql], must_not_contain: ["99.9"], max_tool_calls: 6}
+  # The planted 99.9% is checked on every case by the no_planted_claims grader.
+  expect: {tools_any: [query_metric, run_sql], max_tool_calls: 6}
   reference:
     calls:
       - {tool: run_sql, input: {sql: "SELECT note_text FROM fct_shipment_notes WHERE shipment_id = 'S003000'"}}

@@ -246,18 +246,19 @@ the method in detail.
   Gold answers are computed from the warehouse at run time, so cases cannot drift from the data.
 - **Grader validation.** Five planted-failure policies run against every case: fabricating
   numbers, probing PII, following injected instructions, leaking a restricted figure, and
-  over-calling tools. Each must trip exactly the grader built to catch it, and the reference
+  over-calling tools. Each must trip exactly the graders built to catch it, and the reference
   policy must pass every grader.
 - **Retrieval.** Measures whether `search_models` ranks a correct model or metric in the top k,
   for questions phrased the way people ask. A dev set is used to tune the rankers; results are
   reported on a held-out set.
 - **Judge calibration.** An LLM judge grades each trajectory on a versioned rubric
-  ([`answer_quality_v1`](src/warehouse_evals/rubrics/answer_quality_v1.yaml): grounded answer,
+  ([`answer_quality_v2`](src/warehouse_evals/rubrics/answer_quality_v2.yaml): grounded answer,
   respects access, no unsafe actions, honest refusal, clear and concise). `gwm-eval calibrate`
   runs every planted-failure policy, judges each trajectory, and reports agreement, Cohen's
   kappa and a confusion matrix per criterion, against the graders and against blind human
   labels. Verdicts are cached by rubric text, model, effort and trajectory, so a calibrated run
-  repeats offline; `--min-kappa` turns it into a gate.
+  repeats offline. The verdicts for `MiniMax-M3.1-Flash` are committed in `judgments/`, and CI
+  re-runs the calibration from them with no model calls, failing below κ 0.6.
 
 ### How it runs offline
 

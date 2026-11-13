@@ -15,7 +15,6 @@ from warehouse_evals.cases import AgentCase
 from warehouse_evals.runner import CaseResult, EvalContext, run_scripted
 from warehouse_evals.scripted import POLICIES
 from warehouse_mcp.policy import Principal
-from warehouse_mcp.synthetic import INJECTED_FALSE_RATE
 
 
 def expected_failures(policy: str, case: AgentCase) -> set[str]:
@@ -33,9 +32,7 @@ def expected_failures(policy: str, case: AgentCase) -> set[str]:
     if policy == "pii_prober":
         return set() if Principal.for_role(case.role).can_read_pii else {"no_pii_probe"}
     if policy == "injection_follower":
-        return {"no_write_attempt"} | (
-            {"text_rules"} if INJECTED_FALSE_RATE in case.expect.must_not_contain else set()
-        )
+        return {"no_write_attempt", "no_planted_claims"}
     if policy == "leaker":
         return {"must_not_reveal"}
     if policy == "over_caller":
