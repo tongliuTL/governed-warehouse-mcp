@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import pytest
 
@@ -26,6 +26,8 @@ from warehouse_evals.cases import AgentCase, load_agent_cases
 from warehouse_evals.judge import (
     DEFAULT_JUDGE_EFFORT,
     DEFAULT_JUDGE_MODEL,
+    JUDGE_ATTEMPTS,
+    VERDICT_TOOL,
     CachedJudge,
     ClaudeJudge,
     CriterionVerdict,
@@ -227,7 +229,7 @@ def test_lenient_judge_is_caught(items: list[Item]) -> None:
 def test_claude_judge_request_shape_and_parsing(rubric: Rubric, items: list[Item]) -> None:
     reply = {cid: {"reason": "cited tool call 2", "verdict": "pass"} for cid in rubric.criterion_ids}
     reply["respects_access"] = {"reason": "queried contact_email", "verdict": "fail"}
-    transport = ReplyTransport(message_reply(json.dumps(reply)))
+    transport = ReplyTransport(message_reply("Grading.", "tool_use", tool_use=(VERDICT_TOOL, reply)))
     judge = ClaudeJudge(offline_client(transport), rubric)
     item = items[0]
     judgment = arun(judge.judge(JudgeInput.from_result(item.result, item.case.question)))
@@ -235,21 +237,61 @@ def test_claude_judge_request_shape_and_parsing(rubric: Rubric, items: list[Item
     assert judgment.rubric == rubric.key and judgment.model == DEFAULT_JUDGE_MODEL
     body = transport.bodies[0]
     assert body["model"] == DEFAULT_JUDGE_MODEL
-    assert body["output_config"]["format"]["type"] == "json_schema"
-    assert body["output_config"]["effort"] == DEFAULT_JUDGE_EFFORT
+    assert [t["name"] for t in body["tools"]] == [VERDICT_TOOL]
+    assert body["tools"][0]["input_schema"] == verdict_schema(rubric)
+    assert "tool_choice" not in body  # "auto": forced tools are refused with thinking on
+    assert body["output_config"] == {"effort": DEFAULT_JUDGE_EFFORT}  # no structured-output format
     assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert VERDICT_TOOL in body["system"][0]["text"]
     assert "temperature" not in body and "stream" not in body
 
 
 @pytest.mark.parametrize(
-    ("text", "stop"),
-    [("{}", "refusal"), ("not json", "end_turn"), ('{"grounded_answer": {}}', "end_turn")],
+    "reply",
+    [
+        message_reply("{}", "refusal"),
+        message_reply('{"grounded_answer": {"reason": "x", "verdict": "pass"}}'),  # prose JSON, no tool call
+        message_reply(tool_use=("some_other_tool", {})),
+        message_reply(tool_use=(VERDICT_TOOL, {"grounded_answer": {}})),  # missing criteria
+    ],
 )
-def test_claude_judge_rejects_bad_replies(rubric: Rubric, items: list[Item], text: str, stop: str) -> None:
-    judge = ClaudeJudge(offline_client(ReplyTransport(message_reply(text, stop))), rubric)
+def test_claude_judge_rejects_bad_replies(rubric: Rubric, items: list[Item], reply: dict[str, Any]) -> None:
+    judge = ClaudeJudge(offline_client(ReplyTransport(reply)), rubric)
     item = items[0]
     with pytest.raises(JudgeError):
         arun(judge.judge(JudgeInput.from_result(item.result, item.case.question)))
+
+
+def test_claude_judge_corrects_an_incomplete_tool_call_once(rubric: Rubric, items: list[Item]) -> None:
+    full = {cid: {"reason": "tool call 1", "verdict": "pass"} for cid in rubric.criterion_ids}
+    partial = {k: v for k, v in full.items() if k != "clear_and_concise"}
+    transport = ReplyTransport(
+        message_reply(tool_use=(VERDICT_TOOL, partial), stop="tool_use"),
+        message_reply(tool_use=(VERDICT_TOOL, full), stop="tool_use"),
+    )
+    item = items[0]
+    judgment = arun(
+        ClaudeJudge(offline_client(transport), rubric).judge(
+            JudgeInput.from_result(item.result, item.case.question)
+        )
+    )
+    assert set(judgment.verdicts) == set(rubric.criterion_ids)
+    assert len(transport.bodies) == 2
+    feedback = transport.bodies[1]["messages"][-1]["content"][0]
+    assert feedback["type"] == "tool_result" and feedback["is_error"] is True
+    assert "clear_and_concise" in feedback["content"]
+
+
+def test_claude_judge_gives_up_after_one_correction(rubric: Rubric, items: list[Item]) -> None:
+    transport = ReplyTransport(message_reply("I think it passes."))  # never calls the tool
+    item = items[0]
+    with pytest.raises(JudgeError, match=f"did not call {VERDICT_TOOL}"):
+        arun(
+            ClaudeJudge(offline_client(transport), rubric).judge(
+                JudgeInput.from_result(item.result, item.case.question)
+            )
+        )
+    assert len(transport.bodies) == JUDGE_ATTEMPTS
 
 
 # --- the verdict cache -------------------------------------------------------------------
