@@ -1,0 +1,191 @@
+# Real retrieval queries: written by the agent during live runs, harvested with
+# `gwm-eval harvest` and labelled by a person. Never edited to suit the rankers.
+# Batch 1 (93 queries): MiniMax-M3.1-Flash, 22 agent cases x 3 trials, 2026-11-13. Labels
+# drafted by Claude from the catalog; PENDING OWNER REVIEW.
+# Reported as the "real set"; gated once it has at least 20 queries.
+- query: customer contact email shipment volume
+  relevant: [dim_customers, fct_shipments, shipment_count]
+- query: customer contact email
+  relevant: [dim_customers]
+- query: shipment volume by customer
+  relevant: [shipment_count, fct_shipments]
+- query: email address column
+  relevant: [dim_customers]
+- query: customer contact email shipments volume
+  relevant: [dim_customers, fct_shipments, shipment_count]
+- query: revenue invoice amount billed
+  relevant: [revenue_usd, fct_invoices]
+- query: invoices payments financial
+  relevant: [fct_invoices]
+- query: revenue
+  relevant: [revenue_usd, fct_invoices, mart_customer_revenue_monthly]
+- query: total dollars usd billed price amount sales
+  relevant: [revenue_usd, fct_invoices]
+- query: revenue invoice amount billing
+  relevant: [revenue_usd, fct_invoices]
+- query: total revenue usd amount per customer invoice
+  relevant: [revenue_usd, mart_customer_revenue_monthly, fct_invoices]
+- query: revenue invoices billing amount paid
+  relevant: [revenue_usd, fct_invoices]
+- query: revenue total dollars
+  relevant: [revenue_usd, fct_invoices]
+- query: invoice rate revenue amount charged customer
+  relevant: [revenue_usd, fct_invoices]
+- query: customs entry documents auto approved
+  relevant: [auto_approval_rate, mart_document_automation, fct_documents]
+- query: customs entry documents auto approval
+  relevant: [auto_approval_rate, mart_document_automation, fct_documents]
+- query: gross margin customer segment revenue cost
+  relevant: [gross_margin_usd, gross_margin_pct, mart_customer_revenue_monthly, fct_invoices]
+- query: customer segment revenue cost gross margin
+  relevant: [gross_margin_usd, gross_margin_pct, mart_customer_revenue_monthly, fct_invoices]
+- query: shipment notes
+  relevant: [fct_shipment_notes]
+- query: shipments
+  relevant: [fct_shipments, shipment_count]
+- query: shipment notes comments
+  relevant: [fct_shipment_notes]
+- query: shipments notes
+  relevant: [fct_shipment_notes]
+- query: shipment notes carrier
+  relevant: [fct_shipment_notes]
+- query: shipment details notes carrier
+  relevant: [fct_shipment_notes, fct_shipments]
+- query: shipment shipment_id lookup
+  relevant: [fct_shipments]
+- query: border crossing wait time hours
+  relevant: [avg_border_dwell_hours, mart_border_crossing_dwell]
+- query: border crossing wait time hours truck
+  relevant: [avg_border_dwell_hours, mart_border_crossing_dwell]
+- query: border crossing wait time Laredo
+  relevant: [avg_border_dwell_hours, mart_border_crossing_dwell]
+- query: shipments cross-border late delivery
+  relevant: [fct_shipments, on_time_rate]
+- query: cross-border shipments pickup date late delivery
+  relevant: [fct_shipments, on_time_rate]
+- query: cross-border shipments late delivery
+  relevant: [fct_shipments, on_time_rate]
+- query: shipment transit time days LTL
+  relevant: [avg_transit_days, fct_shipments]
+- query: LTL shipments transit time
+  relevant: [avg_transit_days, fct_shipments]
+- query: shipments pickup date on-time
+  relevant: [fct_shipments, on_time_rate]
+- query: shipments sent by customer
+  relevant: [fct_shipments, shipment_count]
+- query: customer shipments count
+  relevant: [shipment_count, fct_shipments]
+- query: Valley Textiles customer
+  relevant: [dim_customers]
+- query: shipment
+  relevant: [fct_shipments]
+- query: orders shipper consignee
+  relevant: [fct_shipments, dim_customers]
+- query: account name consignor receiver of freight
+  relevant: [dim_customers]
+- query: textiles retail apparel manufacturer
+  relevant: [dim_customers]
+- query: delivery pickup date promised date weight miles
+  relevant: [fct_shipments]
+- query: customer
+  relevant: [dim_customers]
+- query: shipper
+  relevant: [dim_customers]
+- query: loads tendered invoice revenue price
+  relevant: [revenue_usd, fct_invoices, fct_shipments]
+- query: status event tracking pickup delivery
+  relevant: [fct_tracking_events]
+- query: parties accounts buyers senders
+  relevant: [dim_customers]
+- query: shipments customer sender name
+  relevant: [fct_shipments, dim_customers]
+- query: customers accounts sender
+  relevant: [dim_customers]
+- query: fct_shipments
+  relevant: [fct_shipments]
+- query: shipment records
+  relevant: [fct_shipments]
+- query: company customer revenue shipper
+  relevant: [mart_customer_revenue_monthly, revenue_usd, dim_customers]
+- query: lane origin destination
+  relevant: [dim_lanes]
+- query: total shipments volume weight count
+  relevant: [shipment_count, total_weight_kg, fct_shipments]
+- query: Valley Textiles
+  relevant: [dim_customers]
+- query: pickup delivery appointment dock tender
+  relevant: [fct_shipments, fct_tracking_events]
+- query: customer shipments
+  relevant: [fct_shipments, shipment_count]
+- query: shipper customer name dim
+  relevant: [dim_customers]
+- query: shipments fact table
+  relevant: [fct_shipments]
+- query: customer account shipper company
+  relevant: [dim_customers]
+- query: consignee sender booking
+  relevant: [dim_customers, fct_shipments]
+- query: shipment origin destination status dates customer name textile
+  relevant: [fct_shipments, dim_lanes, dim_customers]
+- query: who sends freight with us client tenant account orders volume
+  relevant: [dim_customers, shipment_count]
+- query: shipments count total volume delivered
+  relevant: [shipment_count, fct_shipments]
+- query: quotes lanes origin country
+  relevant: [fct_quotes, dim_lanes]
+- query: quotes accepted lane
+  relevant: [quote_acceptance_rate, fct_quotes]
+- query: quotes lane origin country accepted
+  relevant: [quote_acceptance_rate, fct_quotes, dim_lanes]
+- query: carriers
+  relevant: [dim_carriers]
+- query: carrier
+  relevant: [dim_carriers]
+- query: number of carriers distinct count
+  relevant: [dim_carriers]
+- query: shipment id details
+  relevant: [fct_shipments]
+- query: shipment notes customer
+  relevant: [fct_shipment_notes]
+- query: revenue invoiced amount billing
+  relevant: [revenue_usd, fct_invoices]
+- query: invoice amount charged customer price dollars
+  relevant: [revenue_usd, fct_invoices]
+- query: quotes rate revenue shipments booked
+  relevant: [revenue_usd, fct_invoices, fct_quotes]
+- query: invoice amount billed revenue total
+  relevant: [revenue_usd, fct_invoices]
+- query: fct_invoices invoice line amount usd
+  relevant: [fct_invoices, revenue_usd]
+- query: billing payment line item price cost margin revenue by customer
+  relevant: [mart_customer_revenue_monthly, gross_margin_usd, revenue_usd, fct_invoices]
+- query: usd dollars rate price money
+  relevant: [revenue_usd, fct_invoices]
+- query: mart financial actuals income statement
+  relevant: [mart_customer_revenue_monthly]
+- query: sales bookings earnings gross margin year over year actual booked value
+  relevant: [revenue_usd, gross_margin_usd, mart_customer_revenue_monthly]
+- query: revenue billing amount invoiced
+  relevant: [revenue_usd, fct_invoices]
+- query: invoice payment rate charge amount total sales
+  relevant: [revenue_usd, fct_invoices]
+- query: invoice line item revenue margin
+  relevant: [fct_invoices, revenue_usd, gross_margin_usd]
+- query: shipments picked up count
+  relevant: [shipment_count, fct_shipments]
+- query: shipments picked up pickup event
+  relevant: [fct_tracking_events, fct_shipments]
+- query: shipments pickup date cancellations status
+  relevant: [fct_shipments]
+- query: carrier shipments delivered
+  relevant: [mart_carrier_scorecard]
+- query: carrier shipments
+  relevant: [mart_carrier_scorecard, fct_shipments]
+- query: shipments carrier
+  relevant: [mart_carrier_scorecard, fct_shipments]
+- query: border crossing lanes dim_lanes
+  relevant: [dim_lanes]
+- query: border crossing lanes dimension
+  relevant: [dim_lanes]
+- query: border crossing lanes
+  relevant: [dim_lanes, mart_border_crossing_dwell]
