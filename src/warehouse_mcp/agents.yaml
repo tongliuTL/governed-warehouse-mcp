@@ -1,0 +1,19 @@
+# Agents allowed to call this server, keyed by the token's `client_id` claim.
+#
+# A token's scopes are intersected with its agent's `permitted_scopes`, so an identity provider
+# that over-issues a scope cannot widen what an agent reaches. A token whose client_id is
+# missing, not listed here, or disabled is rejected. Onboarding an agent is one entry here, with
+# no code change. Point `gwm serve --agents` at your own file in production.
+
+agents:
+  local-dev:
+    owner: local development
+    description: Tokens minted by `gwm token` and the test suite. Remove it in production.
+    permitted_scopes: [warehouse:public, warehouse:internal, warehouse:restricted, pii:read]
+
+  # A second agent, permitted less than its tokens may carry:
+  # ops-assistant:
+  #   owner: operations analytics
+  #   description: Internal operations agent; never sees revenue or contact details.
+  #   permitted_scopes: [warehouse:public, warehouse:internal]
+  #   enabled: true

@@ -3,7 +3,9 @@
 Tokens are JWTs signed with Ed25519 (``EdDSA``). The verifier pins the algorithm list, so
 ``alg: none`` and HS256-with-the-public-key confusion attacks fail, and it requires ``exp``,
 ``iat``, ``sub``, ``iss`` and ``aud``. Scopes come from the space-separated ``scope`` claim
-(RFC 9068).
+(RFC 9068). The token's ``client_id`` names the agent, and its scopes are intersected with
+what that agent is permitted in the agent registry (``agents.py``); an unregistered or disabled
+agent is rejected.
 
 For production, point the verifier at your identity provider's public key. ``generate_keypair``
 and ``issue_token`` exist for local development and the test suite.
@@ -11,6 +13,7 @@ and ``issue_token`` exist for local development and the test suite.
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -20,7 +23,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from mcp.server.auth.provider import AccessToken
 
+from warehouse_mcp.agents import AgentRegistry, UnknownAgent, load_agents
 from warehouse_mcp.policy import Principal
+
+log = logging.getLogger(__name__)
 
 ALGORITHMS = ["EdDSA"]
 DEFAULT_ISSUER = "https://auth.example.test"
@@ -93,6 +99,7 @@ class JwtVerifier:
         issuer: str = DEFAULT_ISSUER,
         audience: str = DEFAULT_AUDIENCE,
         leeway_s: int = 30,
+        agents: AgentRegistry | None = None,
     ) -> None:
         key = serialization.load_pem_public_key(public_key_pem)
         if not isinstance(key, Ed25519PublicKey):
@@ -101,6 +108,7 @@ class JwtVerifier:
         self.issuer = issuer
         self.audience = audience
         self.leeway_s = leeway_s
+        self.agents = agents if agents is not None else load_agents()
 
     def claims(self, token: str) -> dict[str, object]:
         try:
@@ -119,17 +127,22 @@ class JwtVerifier:
     def principal(self, token: str) -> Principal:
         return self._principal(self.claims(token))
 
-    @staticmethod
-    def _principal(claims: dict[str, object]) -> Principal:
+    def _principal(self, claims: dict[str, object]) -> Principal:
         scope = claims.get("scope", "")
         if not isinstance(scope, str):
             raise AuthError("invalid token: scope must be a space-separated string")
-        client_id = claims.get("client_id")
-        return Principal(
-            subject=str(claims["sub"]),
-            scopes=frozenset(scope.split()),
-            client_id=str(client_id) if client_id is not None else None,
-        )
+        raw_client = claims.get("client_id")
+        client_id = str(raw_client) if raw_client is not None else None
+        requested = frozenset(scope.split())
+        try:
+            scopes = self.agents.scopes_for(client_id, requested)
+        except UnknownAgent as err:
+            raise AuthError(f"invalid token: {err}") from None
+        if dropped := requested - scopes:
+            log.warning(
+                "agent %s: token scopes %s exceed its permitted scopes; dropped", client_id, sorted(dropped)
+            )
+        return Principal(subject=str(claims["sub"]), scopes=scopes, client_id=client_id)
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
