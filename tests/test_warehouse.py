@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -43,6 +45,44 @@ def test_timeout_interrupts_long_queries(db_path: Path) -> None:
                 )
             )
         assert wh.execute(raw("select 1")).rows == [[1]]  # the connection survives an interrupt
+    finally:
+        wh.close()
+
+
+def test_timeout_fires_on_time(db_path: Path) -> None:
+    wh = Warehouse(db_path, timeout_s=0.5)
+    start = time.perf_counter()
+    try:
+        with pytest.raises(PolicyViolation, match="TIMEOUT") as info:
+            wh.execute(
+                raw(
+                    "select count(*) from fct_tracking_events a, fct_tracking_events b, fct_tracking_events c"
+                )
+            )
+    finally:
+        wh.close()
+    elapsed = time.perf_counter() - start
+    assert 0.5 <= elapsed < 3.0, elapsed  # interrupted near the limit, not when the query ends
+    assert "0.5s" in info.value.message
+
+
+def test_memory_limit_is_hard(db_path: Path, tmp_path: Path) -> None:
+    """No spill to disk: a query that outgrows the limit fails, and the connection survives."""
+    # A copy: DuckDB refuses a second in-process connection to one file with other settings.
+    copy = tmp_path / "small.duckdb"
+    shutil.copy(db_path, copy)
+    wh = Warehouse(copy, memory_limit="64MB")
+    try:
+        assert wh._con.sql("select current_setting('max_temp_directory_size')").fetchone() == ("0 bytes",)
+        with pytest.raises(PolicyViolation, match="EXECUTION_ERROR") as info:
+            wh.execute(
+                raw(
+                    "select string_agg(md5(i::varchar), ',') from "
+                    "(select i from range(3000000) t(i) order by md5(i::varchar))"
+                )
+            )
+        assert "Out of Memory" in info.value.message
+        assert wh.execute(raw("select 1")).rows == [[1]]
     finally:
         wh.close()
 

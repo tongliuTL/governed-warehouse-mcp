@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -119,6 +120,23 @@ def test_denials_are_coded_and_audited(governed: GovernedWarehouse, analyst: Pri
     denials = [r for r in governed.audit.records() if r.decision == "deny"]
     assert [r.reason_code for r in denials] == [code for _, _, code in cases]
     assert "restricted" in (denials[2].detail or "")  # the audit log knows why; the agent does not
+
+
+def test_slow_agent_sql_times_out_through_the_guarded_path(
+    db_path: Path, catalog: Catalog, analyst: Principal
+) -> None:
+    """The guard allows this query (visible models, read-only, one statement), so only the
+    engine timeout stops it: the agent gets a coded TIMEOUT and the audit log records it."""
+    slow = Warehouse(db_path, timeout_s=0.5)
+    try:
+        gw = GovernedWarehouse(warehouse=slow, catalog=catalog)
+        sql = "select count(*) from fct_tracking_events a, fct_tracking_events b, fct_tracking_events c"
+        assert denial_code(call(gw, analyst, "run_sql", {"sql": sql})) == "TIMEOUT"
+        assert [r.reason_code for r in gw.audit.records()] == ["TIMEOUT"]
+        ok = call(gw, analyst, "run_sql", {"sql": "select count(*) as n from dim_lanes"})
+        assert not ok.is_error  # the shared connection survives the interrupt
+    finally:
+        slow.close()
 
 
 def test_unauthenticated(governed: GovernedWarehouse) -> None:
