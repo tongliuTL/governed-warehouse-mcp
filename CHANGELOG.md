@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-13
+
+Addresses the known boundaries of 0.1.0: agent separation, injection coverage, eval
+operations, retrieval and deployment.
+
 ### Added
 
 - **Agent registry.** Each token's scopes are intersected with its agent's permitted scopes
@@ -94,5 +99,6 @@ The first release.
 - **CI.** Lint, strict mypy, tests on Python 3.11 to 3.13 with a coverage floor, and the offline
   eval gate.
 
-[Unreleased]: https://github.com/tongliuTL/governed-warehouse-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tongliuTL/governed-warehouse-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tongliuTL/governed-warehouse-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tongliuTL/governed-warehouse-mcp/releases/tag/v0.1.0

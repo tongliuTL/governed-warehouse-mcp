@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from warehouse_mcp import __version__
 from warehouse_mcp.audit import AuditLog, AuditRecord
 from warehouse_mcp.catalog import DIALECT, Catalog, Tier, load_catalog
 from warehouse_mcp.dense import DEFAULT_MODEL, DenseRanker, FastEmbedder, default_cache_dir
@@ -351,7 +352,7 @@ class GovernedWarehouse:
         # MCPServer configures root logging at its log level; a library default of INFO would
         # take over the host's logging, so the caller opts in (gwm serve passes INFO).
         server_kwargs.setdefault("log_level", "WARNING")
-        mcp = MCPServer("governed-warehouse", instructions=INSTRUCTIONS, version="0.1.0", **server_kwargs)
+        mcp = MCPServer("governed-warehouse", instructions=INSTRUCTIONS, version=__version__, **server_kwargs)
         default_limit = min(50, self.config.max_rows)
 
         @mcp.tool()
