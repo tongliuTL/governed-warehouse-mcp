@@ -32,6 +32,11 @@ RUN uv sync --locked --no-dev --no-editable \
  && /app/.venv/bin/gwm generate --db /data/warehouse.duckdb
 
 FROM ${PYTHON_IMAGE}
+# The MCP Registry checks this label to verify that the image belongs to the server it lists.
+LABEL io.modelcontextprotocol.server.name="io.github.tongliuTL/governed-warehouse-mcp" \
+      org.opencontainers.image.source="https://github.com/tongliuTL/governed-warehouse-mcp" \
+      org.opencontainers.image.description="Governed MCP server for analytical warehouse data, over Streamable HTTP" \
+      org.opencontainers.image.licenses="MIT"
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin gwm
 COPY --from=build /app/.venv /app/.venv
 # Owned by root and read-only to the server user: the engine opens it read_only as well.

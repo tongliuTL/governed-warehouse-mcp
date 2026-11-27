@@ -232,6 +232,11 @@ token's scopes. `/healthz` and `/readyz` answer without a token and return no da
 The [Dockerfile](Dockerfile) builds a small image that serves Streamable HTTP as a non-root user.
 The synthetic warehouse is baked in at `/data`, and the server needs only a public key at `/keys`:
 
+A prebuilt image is published for each release as `ghcr.io/tongliutl/governed-warehouse-mcp`
+(linux/amd64 and linux/arm64), and the server is listed in the
+[MCP Registry](https://registry.modelcontextprotocol.io) as
+`io.github.tongliuTL/governed-warehouse-mcp`. To build it yourself:
+
 ```bash
 docker build -t governed-warehouse-mcp .
 uv run gwm keys --dir .keys            # dev keys; in production, your identity provider's key

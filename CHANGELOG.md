@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Container image on GitHub Container Registry.** Each version tag pushes
+  `ghcr.io/tongliutl/governed-warehouse-mcp` (linux/amd64 and linux/arm64), labelled for the
+  MCP Registry.
+- **MCP Registry listing.** `server.json` describes the server as
+  `io.github.tongliuTL/governed-warehouse-mcp`; the release workflow publishes it after the
+  image, signing in with GitHub OIDC.
+
 ## [0.2.0] - 2026-11-13
 
 Addresses the known boundaries of 0.1.0: agent separation, injection coverage, eval

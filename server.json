@@ -1,0 +1,70 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.tongliuTL/governed-warehouse-mcp",
+  "title": "Governed Warehouse",
+  "description": "Governed MCP server for warehouse data: semantic layer, scoped access, PII controls and SQL guard.",
+  "repository": {
+    "url": "https://github.com/tongliuTL/governed-warehouse-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://tongliu.md/work/data-access/",
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/tongliutl/governed-warehouse-mcp:0.2.0",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:8000/mcp",
+        "headers": [
+          {
+            "name": "Authorization",
+            "description": "Bearer token signed by the mounted key; create one with `gwm token --role analyst`",
+            "value": "Bearer {token}",
+            "isRequired": true,
+            "isSecret": true,
+            "variables": {
+              "token": {
+                "description": "Ed25519-signed JWT from `gwm token`",
+                "isRequired": true,
+                "isSecret": true
+              }
+            }
+          }
+        ]
+      },
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "-p",
+          "value": "8000:8000",
+          "description": "Publish the Streamable HTTP port"
+        },
+        {
+          "type": "named",
+          "name": "--read-only",
+          "description": "Run with a read-only root filesystem"
+        },
+        {
+          "type": "named",
+          "name": "--tmpfs",
+          "value": "/tmp",
+          "description": "Writable scratch space; the server writes nothing else"
+        },
+        {
+          "type": "named",
+          "name": "-v",
+          "value": "{keys_dir}:/keys:ro",
+          "description": "Directory holding public.pem, the Ed25519 key that verifies tokens",
+          "isRequired": true,
+          "variables": {
+            "keys_dir": {
+              "description": "Absolute path to the directory created by `gwm keys`",
+              "isRequired": true
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
