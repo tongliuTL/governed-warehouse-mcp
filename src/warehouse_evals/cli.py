@@ -5,6 +5,9 @@ gwm-eval live --trials 3 --record cassettes/   # real Claude API, records casset
 gwm-eval replay cassettes/       # re-run recorded live runs offline
 gwm-eval calibrate --live        # judge every scripted trajectory, compare with graders (caches verdicts)
 gwm-eval calibrate               # same, offline from the verdict cache
+gwm-eval label-sheet labels/x.jsonl --cassettes cassettes/ --sample 100   # blind sheet for people
+gwm-eval label labels/x.jsonl    # label it in the terminal, one trajectory at a time (resumable)
+gwm-eval calibrate --labels labels/x.jsonl --cassettes cassettes/  # judge and graders vs people
 gwm-eval history                 # recent runs and cases that changed state (eval telemetry)
 gwm-eval baseline [--update]     # compare with, or deliberately move, the regression baseline
 gwm-eval harvest cassettes/      # label template from the queries a live agent sent
@@ -318,12 +321,15 @@ async def _calibrate(args: argparse.Namespace) -> int:
     import anthropic
 
     from warehouse_evals.calibration import (
+        GRADER_CHECK,
         collect,
+        compare_graders_with_humans,
         compare_with_graders,
         compare_with_humans,
         export_label_template,
         load_labels,
         render_markdown,
+        sample_runs,
     )
     from warehouse_evals.judge import CachedJudge, ClaudeJudge, Judge, MissingJudgment, load_rubric
 
@@ -346,7 +352,7 @@ async def _calibrate(args: argparse.Namespace) -> int:
     if skipped:
         print(f"not calibrated yet, skipped offline: {', '.join(skipped)}", file=sys.stderr)
     try:
-        items = await collect(ctx, cases, judge, concurrency=args.concurrency)
+        items = await collect(ctx, cases, judge, concurrency=args.concurrency, cassettes=args.cassettes)
     except MissingJudgment as exc:
         print(f"{exc} (cache: {cache})", file=sys.stderr)
         return 1
@@ -358,9 +364,14 @@ async def _calibrate(args: argparse.Namespace) -> int:
 
     tables = {"deterministic graders": compare_with_graders(items)}
     if args.labels:
-        tables["human labels"] = compare_with_humans(items, load_labels(args.labels), rubric)
+        labels = load_labels(args.labels)
+        tables["human labels"] = compare_with_humans(items, labels, rubric)
+        tables[GRADER_CHECK] = compare_graders_with_humans([(i.case, i.result) for i in items], labels)
+        matched = {(i.id, c) for i in items for c in rubric.criterion_ids} & labels.keys()
+        print(f"{len(matched)} of {len(labels)} human labels match a judged trajectory", file=sys.stderr)
     if args.export_labels:
-        rows = export_label_template(items, rubric, args.export_labels)
+        runs = sample_runs([(i.case, i.result) for i in items], None)
+        rows = export_label_template(runs, rubric, args.export_labels)
         print(f"wrote {rows} label rows to {args.export_labels}", file=sys.stderr)
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -379,6 +390,10 @@ async def _calibrate(args: argparse.Namespace) -> int:
                     "n": a.n,
                     "accuracy": a.accuracy,
                     "kappa": a.kappa,
+                    "tpr": a.tpr,
+                    "tpr_interval": a.tpr_interval,
+                    "tnr": a.tnr,
+                    "tnr_interval": a.tnr_interval,
                     "tp": a.tp,
                     "fp": a.fp,
                     "fn": a.fn,
@@ -405,6 +420,73 @@ async def _calibrate(args: argparse.Namespace) -> int:
             print(f"GATE FAILED: judge kappa below {args.min_kappa}: " + ", ".join(low), file=sys.stderr)
             return 1
     return 0
+
+
+async def _label_sheet(args: argparse.Namespace) -> int:
+    """A blind sheet needs no judge: build the trajectories, sample, write. No API calls."""
+    from warehouse_evals.calibration import export_label_template, sample_runs, trajectories
+    from warehouse_evals.judge import load_rubric
+
+    if args.sheet.exists() and not args.force:
+        print(f"{args.sheet} exists; labels in it would be lost (use --force to overwrite)", file=sys.stderr)
+        return 1
+    rubric = load_rubric(args.rubric)
+    ctx = _context(args)
+    try:
+        runs = await trajectories(ctx, load_agent_cases(), cassettes=args.cassettes)
+    finally:
+        ctx.close()
+    picked = sample_runs(runs, args.sample, seed=args.seed)
+    rows = export_label_template(picked, rubric, args.sheet)
+    live = sum(r.mode == "replay" for _, r in picked)
+    print(
+        f"wrote {rows} rows to {args.sheet}: {len(picked)} trajectories "
+        f"({len(picked) - live} scripted, {live} live) x {len(rubric.criterion_ids)} criteria",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _label(args: argparse.Namespace) -> int:
+    from warehouse_evals.judge import load_rubric
+    from warehouse_evals.labelling import label_sheet
+
+    done, total = label_sheet(args.sheet, load_rubric(args.rubric))
+    print(f"\n{done} of {total} trajectories labelled; saved {args.sheet}", file=sys.stderr)
+    return 0
+
+
+def _add_calibration_parsers(sub: Any) -> None:
+    p_cal = sub.add_parser("calibrate", help="calibrate the LLM judge against graders and human labels")
+    p_cal.add_argument("--rubric", default=DEFAULT_RUBRIC)
+    p_cal.add_argument("--model", help=f"default: $GWM_JUDGE_MODEL, else {DEFAULT_JUDGE_MODEL}")
+    p_cal.add_argument(
+        "--effort", default=DEFAULT_JUDGE_EFFORT, choices=("low", "medium", "high", "xhigh", "max")
+    )
+    p_cal.add_argument(
+        "--judge-cache", type=Path, help="verdict cache (default judgments/<rubric>.<model>.<effort>.jsonl)"
+    )
+    p_cal.add_argument(
+        "--live", action="store_true", help="call the Claude API for verdicts missing from the cache"
+    )
+    p_cal.add_argument("--concurrency", type=int, default=4)
+    p_cal.add_argument("--labels", type=Path, help="human labels (JSONL) to compare against")
+    p_cal.add_argument("--cassettes", type=Path, help="also judge the replayed live runs recorded here")
+    p_cal.add_argument("--export-labels", type=Path, help="write a blank, blind labelling template here")
+    p_cal.add_argument("--min-kappa", type=float, help="exit 1 if any grader-mapped criterion is below this")
+    p_cal.set_defaults(func=_calibrate)
+    p_sheet = sub.add_parser("label-sheet", help="write a blind human-labelling sheet (no API calls)")
+    p_sheet.add_argument("sheet", type=Path)
+    p_sheet.add_argument("--rubric", default=DEFAULT_RUBRIC)
+    p_sheet.add_argument("--cassettes", type=Path, help="also include the replayed live runs recorded here")
+    p_sheet.add_argument("--sample", type=int, help="at most this many trajectories (default: all)")
+    p_sheet.add_argument("--seed", type=int, default=0)
+    p_sheet.add_argument("--force", action="store_true", help="overwrite an existing sheet")
+    p_sheet.set_defaults(func=_label_sheet)
+    p_label = sub.add_parser("label", help="label a sheet in the terminal, one trajectory at a time")
+    p_label.add_argument("sheet", type=Path)
+    p_label.add_argument("--rubric", default=DEFAULT_RUBRIC)
+    p_label.set_defaults(func=_label)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -453,23 +535,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_replay.add_argument("cassettes", type=Path)
     p_replay.add_argument("--gate", action="store_true")
     p_replay.set_defaults(func=_replay)
-    p_cal = sub.add_parser("calibrate", help="calibrate the LLM judge against graders and human labels")
-    p_cal.add_argument("--rubric", default=DEFAULT_RUBRIC)
-    p_cal.add_argument("--model", help=f"default: $GWM_JUDGE_MODEL, else {DEFAULT_JUDGE_MODEL}")
-    p_cal.add_argument(
-        "--effort", default=DEFAULT_JUDGE_EFFORT, choices=("low", "medium", "high", "xhigh", "max")
-    )
-    p_cal.add_argument(
-        "--judge-cache", type=Path, help="verdict cache (default judgments/<rubric>.<model>.<effort>.jsonl)"
-    )
-    p_cal.add_argument(
-        "--live", action="store_true", help="call the Claude API for verdicts missing from the cache"
-    )
-    p_cal.add_argument("--concurrency", type=int, default=4)
-    p_cal.add_argument("--labels", type=Path, help="human labels (JSONL) to compare against")
-    p_cal.add_argument("--export-labels", type=Path, help="write a blank, blind labelling template here")
-    p_cal.add_argument("--min-kappa", type=float, help="exit 1 if any grader-mapped criterion is below this")
-    p_cal.set_defaults(func=_calibrate)
+    _add_calibration_parsers(sub)
     return parser
 
 
