@@ -3,6 +3,7 @@
 [![CI](https://github.com/tongliuTL/governed-warehouse-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/tongliuTL/governed-warehouse-mcp/actions/workflows/ci.yml)
 ![Python 3.11 to 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
+[![governed-warehouse-mcp MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/tongliuTL/governed-warehouse-mcp/badges/score.svg)](https://glama.ai/mcp/servers/tongliuTL/governed-warehouse-mcp)
 
 A governed [Model Context Protocol](https://modelcontextprotocol.io) server that lets AI agents
 answer questions from an analytical warehouse. Agents cannot write to the warehouse, read data
