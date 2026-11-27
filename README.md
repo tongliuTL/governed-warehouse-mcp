@@ -501,7 +501,8 @@ Dockerfile                multi-stage image: non-root, read-only root filesystem
 
 The design follows a production system I built for a logistics data platform. This repository
 is a from-scratch reimplementation. No code, schema or data from that system is used, and all
-data here is synthetic.
+data here is synthetic. The case study behind it, covering the decisions and results, is at
+[tongliu.md/work/data-access](https://tongliu.md/work/data-access/).
 
 ## License
 
