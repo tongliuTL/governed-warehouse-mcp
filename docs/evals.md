@@ -118,20 +118,58 @@ with its result and the final answer; it never sees the gold value or the grader
    at the rubric wording, or at a gap the graders share. Calibrating v1 found such a gap: an
    answer that gave the right figure and then repeated the planted false rate passed every
    grader, and the judge failed it. `no_planted_claims` closes that gap.
-2. **Against human labels.** `--export-labels` writes a blind template (one row per trajectory
-   and criterion, judge verdicts hidden); filled rows are compared with `--labels`. This is the
-   only check for `clear_and_concise`.
+2. **Against human labels.** A person labels a blind sample of trajectories, scripted and
+   live, and the report compares both the judge and the graders with those labels. This is
+   the only check for `clear_and_concise`, the only check on live runs, and the check that
+   the graders in (1) deserve their trust. See [Human labels](#human-labels).
 
-For each criterion the report gives agreement, Cohen's kappa and a confusion matrix with
-**fail** as the positive class, because catching failures is the judge's job; a judge that
-passes everything scores well on agreement when most runs are good, and kappa exposes that.
-Cases where one side says `not_applicable` and the other does not are counted separately.
+For each criterion the report gives agreement, Cohen's kappa, TPR and TNR with Wilson 95%
+intervals, and a confusion matrix with **fail** as the positive class, because catching
+failures is the judge's job. TPR is the share of real failures the judge catches; TNR the share
+of good runs it leaves alone. A judge that passes everything scores well on agreement when
+most runs are good, and kappa and TPR expose that. Cases where one side says `not_applicable`
+and the other does not are counted separately.
 
 ```bash
 uv run gwm-eval calibrate --live                      # judge every trajectory, cache the verdicts
-uv run gwm-eval calibrate --export-labels labels.jsonl  # offline from the cache; blank label sheet
-uv run gwm-eval calibrate --labels labels.jsonl --min-kappa 0.8
+uv run gwm-eval calibrate --labels labels/answer_quality_v3.jsonl --cassettes reports/live-cassettes
 ```
+
+### Human labels
+
+Agreement with the graders is a floor: scripted failures are blatant. Human labels measure the
+judge where it matters, on a real model's runs, and on the one criterion no grader covers.
+
+```bash
+uv run gwm-eval label-sheet labels/answer_quality_v3.jsonl --cassettes reports/live-cassettes --sample 100
+uv run gwm-eval label labels/answer_quality_v3.jsonl       # resumable; q saves and quits
+uv run gwm-eval calibrate --live --cassettes reports/live-cassettes   # judge the live runs once
+uv run gwm-eval calibrate --labels labels/answer_quality_v3.jsonl --cassettes reports/live-cassettes
+```
+
+- **Blind.** The sheet holds an opaque content id per trajectory, never the policy, case or
+  model name: a row from a policy called `fabricator` would give the answer away. Judge
+  verdicts are not on it. Do not open `judgments/` or the calibration report until labelling
+  is done.
+- **Sample.** `--sample 100` draws scripted and live runs in turn (50 each when both exist),
+  drops duplicate trajectories and shuffles with `--seed`, so a policy's runs do not sit
+  together. 100 trajectories is 500 verdicts, about 90 minutes in two sittings. At that size a
+  TPR of 0.9 on 40 failures has a Wilson interval of about [0.77, 0.96]; say the interval,
+  not only the rate.
+- **Rules on screen.** `gwm-eval label` shows each criterion's pass, fail and not-applicable
+  wording from the rubric, the same text the judge reads, and takes `p`, `f` or `n` with an
+  optional note. Write a note on every fail and every hard call: they are what you read when
+  you adjudicate.
+- **Adjudicate every disagreement.** For each row in the report's disagreement list, decide
+  whether the judge, the graders or the label was wrong. A wrong judge means rubric wording to
+  fix, and that is a new rubric version (see v1 to v3 above). A wrong label is corrected in
+  the sheet with a note. A wrong grader is a grader bug, and gets a planted-failure test.
+- **Consistency.** A week later, re-label 20 trajectories from a fresh sheet with another seed
+  and compare. If you disagree with yourself on a criterion, its wording is too vague for any
+  judge.
+- Live trajectories need the recorded cassettes on disk (`reports/` is not committed), so CI
+  compares the human labels on scripted trajectories only. The committed sheet keeps the
+  labels themselves.
 
 ### Results on MiniMax-M3.1-Flash (effort medium, 87 trajectories)
 
@@ -332,8 +370,8 @@ run replay those recordings.
   injection pattern once, not to estimate a model's accuracy with tight error bars.
 - Judge calibration against the graders reuses the scripted policies, so its trajectories are
   templated and its failures are blatant. Agreement on them is a floor, not an estimate of how
-  the judge does on subtle failures from a real model; human labels on live runs are the next
-  step.
+  the judge does on subtle failures from a real model. [Human labels](#human-labels) on a
+  sample of live runs measure that.
 - `respects_access` in v3 names models, metrics and columns. The graders check models and
   metrics by name and columns only for PII, which is every column-level restriction this
   catalog has. A catalog with other restricted columns would need `no_restricted_attempt` to

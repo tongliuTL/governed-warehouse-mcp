@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Blind human labelling.** `gwm-eval label-sheet` writes a sheet of sampled trajectories,
+  scripted and replayed live runs in turn, keyed by an opaque content id; `gwm-eval label`
+  labels it in the terminal with the rubric's rules on screen, saving after every trajectory.
+  `calibrate --labels` now also compares the graders with the labels, and `--cassettes` judges
+  the live runs.
+- **TPR and TNR with Wilson 95% intervals** in every calibration table, fail as the positive
+  class.
+
+### Changed
+
+- The label template no longer carries the policy and case names, which gave the planted
+  failure away; labels are keyed by `trajectory_id`.
+
 ## [0.2.0] - 2026-11-13
 
 Addresses the known boundaries of 0.1.0: agent separation, injection coverage, eval

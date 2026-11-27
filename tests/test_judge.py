@@ -363,16 +363,16 @@ def test_cache_records_then_serves_offline(tmp_path: Path, rubric: Rubric, items
 
 def test_label_template_roundtrip(tmp_path: Path, rubric: Rubric, items: list[Item]) -> None:
     path = tmp_path / "labels.jsonl"
-    rows = export_label_template(items[:3], rubric, path)
+    rows = export_label_template([(i.case, i.result) for i in items[:3]], rubric, path)
     assert rows == 3 * len(rubric.criterion_ids)
     lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    assert "<question>" in lines[0]["trajectory"] and "verdict" in lines[0]
+    assert "<question>" in lines[0]["trajectory"] and lines[0]["verdict"] == "" and "note" in lines[0]
     assert all("oracle" not in line["trajectory"] for line in lines)  # blind to the judge
     assert load_labels(path) == {}  # blank rows are skipped
     lines[0]["verdict"] = "fail"
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
     labels = load_labels(path)
-    assert len(labels) == 1
+    assert labels == {(items[0].id, lines[0]["criterion"]): "fail"}
     table = {a.criterion: a for a in compare_with_humans(items, labels, rubric)}
     assert table[lines[0]["criterion"]].n == 1
 
@@ -380,6 +380,17 @@ def test_label_template_roundtrip(tmp_path: Path, rubric: Rubric, items: list[It
     path.write_text(json.dumps(lines[0]) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="invalid verdict"):
         load_labels(path)
+
+
+def test_label_sheet_is_blind_to_policy_and_case(tmp_path: Path, rubric: Rubric, items: list[Item]) -> None:
+    """A policy called "fabricator" on the sheet would give the planted failure away."""
+    path = tmp_path / "labels.jsonl"
+    export_label_template([(i.case, i.result) for i in items], rubric, path)
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert set(rows[0]) == {"trajectory_id", "criterion", "verdict", "note", "trajectory"}
+    keys_and_ids = " ".join(f"{r['trajectory_id']} {r['criterion']}" for r in rows)
+    for name in {i.result.policy for i in items} | {i.case.id for i in items}:
+        assert name not in keys_and_ids
 
 
 def test_cli_calibrate_offline(
@@ -401,7 +412,22 @@ def test_cli_calibrate_offline(
     payload = json.loads((out / "calibration-answer_quality-v3.json").read_text(encoding="utf-8"))
     assert all(row["kappa"] == 1.0 for row in payload["tables"]["deterministic graders"])
     assert labels.exists()
+    rows = [json.loads(line) for line in labels.read_text(encoding="utf-8").splitlines()]
+    for row in rows:  # a labeller who agrees with the graders everywhere, "pass" where none applies
+        row["verdict"] = "pass"
+    by_id = {i.id: i for i in items}
+    for row in rows:
+        fn = REFERENCE.get(row["criterion"])
+        if fn is not None:
+            item = by_id[row["trajectory_id"]]
+            row["verdict"] = fn(item.case, item.result)
+    labels.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     assert cli.main([*base, "--labels", str(labels)]) == 0
+    payload = json.loads((out / "calibration-answer_quality-v3.json").read_text(encoding="utf-8"))
+    assert all(row["kappa"] == 1.0 for row in payload["tables"]["human labels"] if row["n"])
+    assert all(row["kappa"] == 1.0 for row in payload["tables"]["human labels (grader check)"])
+    report = (out / "calibration-answer_quality-v3.md").read_text(encoding="utf-8")
+    assert "## Judge vs human labels" in report and "## Graders vs human labels" in report
 
 
 def test_render_markdown_lists_disagreements(rubric: Rubric, items: list[Item]) -> None:
