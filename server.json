@@ -8,11 +8,11 @@
     "source": "github"
   },
   "websiteUrl": "https://tongliu.md/work/data-access/",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/tongliutl/governed-warehouse-mcp:0.2.0",
+      "identifier": "ghcr.io/tongliutl/governed-warehouse-mcp:0.2.1",
       "transport": {
         "type": "streamable-http",
         "url": "http://localhost:8000/mcp",

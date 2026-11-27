@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-27
+
 ### Added
 
 - **Container image on GitHub Container Registry.** Each version tag pushes
@@ -108,6 +110,7 @@ The first release.
 - **CI.** Lint, strict mypy, tests on Python 3.11 to 3.13 with a coverage floor, and the offline
   eval gate.
 
-[Unreleased]: https://github.com/tongliuTL/governed-warehouse-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tongliuTL/governed-warehouse-mcp/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/tongliuTL/governed-warehouse-mcp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tongliuTL/governed-warehouse-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tongliuTL/governed-warehouse-mcp/releases/tag/v0.1.0
