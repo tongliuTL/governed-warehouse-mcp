@@ -101,3 +101,8 @@ tool result carries the catalog version, so a catalog edit changes every traject
 - In the pull request description, say what changed for someone using the server or the
   harness, and how you checked it.
 - CI must be green before merge.
+
+## Releases
+
+[docs/releasing.md](docs/releasing.md) covers cutting a version, what the release workflow
+publishes, and keeping the directory listings current.
